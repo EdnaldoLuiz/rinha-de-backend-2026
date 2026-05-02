@@ -2,6 +2,7 @@ package com.expedit.rinha2026.vectorizer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.expedit.rinha2026.domain.Constants;
 import com.expedit.rinha2026.domain.FraudRequestFields;
 import com.expedit.rinha2026.domain.MccRiskTable;
 import com.expedit.rinha2026.domain.NormalizationConfig;
@@ -41,12 +42,10 @@ class FraudVectorizerTest {
         QueryVector q = new QueryVector();
         vectorizer.vectorize(req, q);
 
-        assertEquals(-1f, q.values[5]);
-        assertEquals(-1f, q.values[6]);
-        assertEquals(0f, q.values[11]); // known merchant
-        assertEquals(0.2f, q.values[12]);
-        assertEquals(0f, q.values[14]);
-        assertEquals(0f, q.values[15]);
+        assertEquals((short) -Constants.VECTOR_SCALE, q.values[5]);
+        assertEquals((short) -Constants.VECTOR_SCALE, q.values[6]);
+        assertEquals((short) 0, q.values[11]); // known merchant
+        assertEquals((short) 2000, q.values[12]); // 0.2
     }
 
     @Test
@@ -85,19 +84,19 @@ class FraudVectorizerTest {
         QueryVector q = new QueryVector();
         vectorizer.vectorize(req, q);
 
-        assertEquals(0.0041f, q.values[0], 0.0001f);
-        assertEquals(0.1667f, q.values[1], 0.0001f);
-        assertEquals(0.05f, q.values[2], 0.0001f);
-        assertEquals(0.7826f, q.values[3], 0.0001f);
-        assertEquals(0.3333f, q.values[4], 0.0001f);
-        assertEquals(-1f, q.values[5]);
-        assertEquals(-1f, q.values[6]);
-        assertEquals(0.0292f, q.values[7], 0.0001f);
-        assertEquals(0.15f, q.values[8], 0.0001f);
-        assertEquals(0f, q.values[9]);
-        assertEquals(1f, q.values[10]);
-        assertEquals(0f, q.values[11]);
-        assertEquals(0.15f, q.values[12], 0.0001f);
-        assertEquals(0.006f, q.values[13], 0.0001f);
+        assertEquals((short) 41, q.values[0]);     // 0.0041
+        assertEquals((short) 1667, q.values[1]);   // 0.1667
+        assertEquals((short) 500, q.values[2]);    // 0.05
+        assertEquals((short) 7826, q.values[3]);   // 0.7826
+        assertEquals((short) 3333, q.values[4]);   // 0.3333
+        assertEquals((short) -10000, q.values[5]);
+        assertEquals((short) -10000, q.values[6]);
+        assertEquals((short) 292, q.values[7]);    // 0.0292
+        assertEquals((short) 1500, q.values[8]);   // 0.15
+        assertEquals((short) 0, q.values[9]);
+        assertEquals((short) 10000, q.values[10]);
+        assertEquals((short) 0, q.values[11]);
+        assertEquals((short) 1500, q.values[12]);  // 0.15
+        assertEquals((short) 60, q.values[13]);    // 0.006
     }
 }

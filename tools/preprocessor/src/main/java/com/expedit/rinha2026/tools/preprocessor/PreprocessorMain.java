@@ -21,13 +21,13 @@ public final class PreprocessorMain {
         LoadedIndex parsed = new ReferenceDatasetLoader().load(json);
 
         List<ReferenceRecord> records = toReferenceRecords(parsed);
-        LoadedIndex indexed = new BucketBoundsCalculator().buildIndexed(records);
+        LoadedIndex indexed = new BucketedShortIndexBuilder().build(records);
 
         new BinaryIndexWriter().write(output, indexed);
 
         PreprocessorReport report = new PreprocessorReport(
             indexed.labels().length,
-            indexed.buckets().length,
+            indexed.bucketStarts().length - 1,
             Files.size(output)
         );
 
@@ -43,9 +43,11 @@ public final class PreprocessorMain {
         BucketKeyEncoder encoder = new BucketKeyEncoder();
 
         for (int row = 0; row < index.labels().length; row++) {
-            int offset = row * index.stride();
+            int offset = row * index.dimensions();
             float[] vector14 = new float[Constants.VECTOR_DIMENSIONS];
-            System.arraycopy(index.vectors(), offset, vector14, 0, Constants.VECTOR_DIMENSIONS);
+            for (int d = 0; d < Constants.VECTOR_DIMENSIONS; d++) {
+                vector14[d] = index.vectors()[offset + d] / 10000.0f;
+            }
             int key = encoder.encode(vector14);
             records.add(new ReferenceRecord(vector14, index.labels()[row], key));
         }

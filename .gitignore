@@ -19,3 +19,7 @@ benchmark/results/
 
 # generated binary index
 app/src/main/resources/fraud-index.dat
+
+# local concat tooling/output
+concat_relevant_files.py
+project_concat.txt

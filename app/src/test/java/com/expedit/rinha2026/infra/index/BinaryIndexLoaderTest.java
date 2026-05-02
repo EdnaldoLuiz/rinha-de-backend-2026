@@ -16,26 +16,26 @@ class BinaryIndexLoaderTest {
         try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(temp))) {
             out.writeInt(BinaryIndexFormat.MAGIC);
             out.writeInt(BinaryIndexFormat.VERSION);
-            out.writeInt(Constants.VECTOR_STRIDE);
             out.writeInt(Constants.VECTOR_DIMENSIONS);
             out.writeInt(2);
-            out.writeInt(1);
+            out.writeInt(Constants.BUCKET_COUNT);
 
-            out.writeInt(7); // bucket key
-            out.writeInt(0); // start
-            out.writeInt(2); // count
-            for (int i = 0; i < Constants.VECTOR_DIMENSIONS; i++) {
-                out.writeFloat(0f);
-            }
-            for (int i = 0; i < Constants.VECTOR_DIMENSIONS; i++) {
-                out.writeFloat(1f);
+            int[] bucketStarts = new int[Constants.BUCKET_COUNT + 1];
+            bucketStarts[0] = 0;
+            bucketStarts[1] = 2;
+            for (int i = 2; i < bucketStarts.length; i++) {
+                bucketStarts[i] = 2;
             }
 
-            float[] vectors = new float[2 * Constants.VECTOR_STRIDE];
-            vectors[0] = 0.1f;
-            vectors[16] = 0.9f;
-            for (float v : vectors) {
-                out.writeFloat(v);
+            for (int value : bucketStarts) {
+                out.writeInt(value);
+            }
+
+            short[] vectors = new short[2 * Constants.VECTOR_DIMENSIONS];
+            vectors[0] = 1000;
+            vectors[14] = 9000;
+            for (short v : vectors) {
+                out.writeShort(v);
             }
 
             out.write(new byte[] {0, 1});
@@ -43,10 +43,9 @@ class BinaryIndexLoaderTest {
 
         LoadedIndex loaded = new BinaryIndexLoader().load(temp);
         assertEquals(Constants.VECTOR_DIMENSIONS, loaded.dimensions());
-        assertEquals(Constants.VECTOR_STRIDE, loaded.stride());
-        assertEquals(1, loaded.buckets().length);
-        assertEquals(32, loaded.vectors().length);
-        assertEquals(2, loaded.labels().length);
+        assertEquals(2, loaded.vectorCount());
+        assertEquals(Constants.BUCKET_COUNT + 1, loaded.bucketStarts().length);
+        assertEquals(28, loaded.vectors().length);
         assertArrayEquals(new byte[] {0, 1}, loaded.labels());
     }
 }

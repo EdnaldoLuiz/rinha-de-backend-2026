@@ -4,22 +4,20 @@ import com.expedit.rinha2026.domain.Constants;
 
 public record LoadedIndex(
     int dimensions,
-    int stride,
-    float[] vectors,
+    short[] vectors,
     byte[] labels,
-    BucketMetadata[] buckets
+    int[] bucketStarts
 ) {
-    public static LoadedIndex fromVectors(float[] vectors, byte[] labels) {
+    public static LoadedIndex empty() {
         return new LoadedIndex(
             Constants.VECTOR_DIMENSIONS,
-            Constants.VECTOR_STRIDE,
-            vectors,
-            labels,
-            new BucketMetadata[0]
+            new short[0],
+            new byte[0],
+            new int[Constants.BUCKET_COUNT + 1]
         );
     }
 
-    public static LoadedIndex empty() {
-        return fromVectors(new float[0], new byte[0]);
+    public int vectorCount() {
+        return labels.length;
     }
 }

@@ -9,7 +9,6 @@ import com.expedit.rinha2026.infra.config.MccRiskTableLoader;
 import com.expedit.rinha2026.infra.config.NormalizationConfigLoader;
 import com.expedit.rinha2026.infra.index.BinaryIndexLoader;
 import com.expedit.rinha2026.infra.index.LoadedIndex;
-import com.expedit.rinha2026.infra.index.ReferenceDatasetLoader;
 import com.expedit.rinha2026.infra.io.ResourceResolver;
 import com.expedit.rinha2026.parser.PayloadParser;
 import com.expedit.rinha2026.response.ResponseBuffers;
@@ -29,11 +28,11 @@ public final class StartupLoader {
         MccRiskTable mccRiskTable = new MccRiskTableLoader()
             .load(resourceResolver.readUtf8(appConfig.mccRiskLocation()));
 
-        LoadedIndex loadedIndex = loadIndex(appConfig, resourceResolver);
+        LoadedIndex loadedIndex = loadIndex(appConfig);
         SearchEngine searchEngine = new ExactKnnSearchEngine(
             loadedIndex.vectors(),
             loadedIndex.labels(),
-            loadedIndex.buckets()
+            loadedIndex.bucketStarts()
         );
 
         HttpRequestContext context = new HttpRequestContext(
@@ -48,14 +47,16 @@ public final class StartupLoader {
         new HttpServerBootstrap().start(appConfig, readinessState, context);
         readinessState.setReady(true);
 
-        System.out.printf("Startup ready on port %d with %d reference vectors.%n", appConfig.port(), loadedIndex.labels().length);
+        System.out.printf("Startup ready on port %d with %d reference vectors.%n",
+            appConfig.port(),
+            loadedIndex.vectorCount());
     }
 
-    private LoadedIndex loadIndex(AppConfig appConfig, ResourceResolver resourceResolver) throws Exception {
+    private LoadedIndex loadIndex(AppConfig appConfig) throws Exception {
         if (appConfig.binaryIndexLocation() != null && !appConfig.binaryIndexLocation().isBlank()) {
             return new BinaryIndexLoader().load(Path.of(appConfig.binaryIndexLocation()));
         }
 
-        return new ReferenceDatasetLoader().load(resourceResolver.readUtf8(appConfig.referencesLocation()));
+        throw new IllegalStateException("Binary index is required for engine-v2");
     }
 }

@@ -10,7 +10,7 @@ RUN mvn -q -pl tools/preprocessor -am clean package -DskipTests
 RUN java -jar tools/preprocessor/target/preprocessor-0.1.0-SNAPSHOT-all.jar resources/references.json.gz app/src/main/resources/fraud-index.dat
 RUN mvn -q -pl app -am package -DskipTests
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jdk
 WORKDIR /app
 
 COPY --from=build /workspace/app/target/app-0.1.0-SNAPSHOT.jar /app/app.jar
@@ -18,7 +18,7 @@ COPY --from=build /workspace/app/src/main/resources/fraud-index.dat /app/resourc
 
 ENV PORT=8080
 ENV INDEX_BINARY_FILE=/app/resources/fraud-index.dat
-ENV SERVER_THREADS=2
+ENV SERVER_THREADS=1
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

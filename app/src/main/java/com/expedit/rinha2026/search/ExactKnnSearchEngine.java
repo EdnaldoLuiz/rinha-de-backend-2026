@@ -3,36 +3,29 @@ package com.expedit.rinha2026.search;
 import com.expedit.rinha2026.domain.Constants;
 import com.expedit.rinha2026.domain.QueryVector;
 import com.expedit.rinha2026.domain.SearchResult;
-import com.expedit.rinha2026.infra.index.BucketMetadata;
 import java.util.Arrays;
 
 public final class ExactKnnSearchEngine implements SearchEngine {
-    private static final int HOURS = 24;
-    private static final int TX_BUCKETS = 4;
-    private static final int PRIORITY_BUCKET_CAPACITY = 10;
-
-    private final float[] vectors;
+    private final short[] vectors;
     private final byte[] labels;
-    private final BucketMetadata[] buckets;
+    private final int[] bucketStarts;
     private final ThreadLocal<Top5Selector> top5Local;
-    private final int[] bucketIndexByKey;
-    private final ThreadLocal<int[]> priorityBucketsLocal;
+    private final ThreadLocal<boolean[]> visitedBuckets;
 
-    public ExactKnnSearchEngine(float[] vectors, byte[] labels) {
-        this(vectors, labels, new BucketMetadata[0]);
+    public ExactKnnSearchEngine(short[] vectors, byte[] labels) {
+        this(vectors, labels, null);
     }
 
-    public ExactKnnSearchEngine(float[] vectors, byte[] labels, BucketMetadata[] buckets) {
+    public ExactKnnSearchEngine(short[] vectors, byte[] labels, int[] bucketStarts) {
         this.vectors = vectors;
         this.labels = labels;
-        this.buckets = buckets == null ? new BucketMetadata[0] : buckets;
+        this.bucketStarts = bucketStarts == null ? new int[0] : bucketStarts;
         this.top5Local = ThreadLocal.withInitial(Top5Selector::new);
-        this.bucketIndexByKey = buildBucketIndexByKey(this.buckets);
-        this.priorityBucketsLocal = ThreadLocal.withInitial(() -> new int[PRIORITY_BUCKET_CAPACITY]);
+        this.visitedBuckets = ThreadLocal.withInitial(() -> new boolean[Constants.BUCKET_COUNT]);
     }
 
     public static ExactKnnSearchEngine empty() {
-        return new ExactKnnSearchEngine(new float[0], new byte[0], new BucketMetadata[0]);
+        return new ExactKnnSearchEngine(new short[0], new byte[0], new int[0]);
     }
 
     @Override
@@ -40,17 +33,18 @@ public final class ExactKnnSearchEngine implements SearchEngine {
         SearchResult result = new SearchResult();
         if (labels.length == 0) {
             result.fraudCount = 0;
-            result.worstDistance = Float.POSITIVE_INFINITY;
+            result.worstDistance = Long.MAX_VALUE;
             return result;
         }
 
         Top5Selector top5 = top5Local.get();
         top5.reset();
 
-        if (buckets.length == 0) {
-            scanAll(queryVector, top5);
-        } else {
+        if (bucketStarts.length == Constants.BUCKET_COUNT + 1
+            && bucketStarts[Constants.BUCKET_COUNT] == labels.length) {
             scanNeighborhood(queryVector, top5);
+        } else {
+            scanAll(queryVector, top5);
         }
 
         result.fraudCount = top5.fraudCount();
@@ -65,97 +59,68 @@ public final class ExactKnnSearchEngine implements SearchEngine {
     }
 
     private void scanNeighborhood(QueryVector queryVector, Top5Selector top5) {
-        float[] q = queryVector.values;
+        short[] q = queryVector.values;
+        boolean[] visited = visitedBuckets.get();
+        Arrays.fill(visited, false);
 
         int binaryBucket = RuntimeBucketKeyEncoder.binaryBucket(q[9], q[10], q[11]);
         int hourBucket = RuntimeBucketKeyEncoder.hourBucket(q[3]);
         int dayBucket = RuntimeBucketKeyEncoder.dayBucket(q[4]);
         int txBucket = RuntimeBucketKeyEncoder.txBucket(q[8]);
 
-        int[] priorityBucketIndexes = priorityBucketsLocal.get();
-        int priorityCount = 0;
-
-        // 1) bucket exato primeiro
-        priorityCount = addPriorityBucketIndex(
-            priorityBucketIndexes,
-            priorityCount,
-            RuntimeBucketKeyEncoder.encode(binaryBucket, hourBucket, dayBucket, txBucket)
-        );
-
-        // 2) vizinhança de hour ±1 e tx ±1 no mesmo day
-        int hourStart = Math.max(0, hourBucket - 1);
-        int hourEnd = Math.min(HOURS - 1, hourBucket + 1);
-
-        int txStart = Math.max(0, txBucket - 1);
-        int txEnd = Math.min(TX_BUCKETS - 1, txBucket + 1);
-
-        for (int h = hourStart; h <= hourEnd; h++) {
-            for (int t = txStart; t <= txEnd; t++) {
-                int key = RuntimeBucketKeyEncoder.encode(binaryBucket, h, dayBucket, t);
-                priorityCount = addPriorityBucketIndex(priorityBucketIndexes, priorityCount, key);
-            }
-        }
-
-        // 3) escaneia primeiro buckets mais prováveis de conter vizinhos próximos
-        for (int i = 0; i < priorityCount; i++) {
-            scanBucketByIndex(queryVector, top5, priorityBucketIndexes[i]);
-        }
-
-        // 4) mantém exatidão: varre restantes sem lookup por chave e sem alocação por consulta
-        for (int bucketIndex = 0; bucketIndex < buckets.length; bucketIndex++) {
-            if (containsPriorityIndex(priorityBucketIndexes, priorityCount, bucketIndex)) {
-                continue;
-            }
-            scanBucketByIndex(queryVector, top5, bucketIndex);
-        }
-    }
-
-    private int addPriorityBucketIndex(int[] priorityBucketIndexes, int priorityCount, int key) {
-        if (key < 0 || key >= bucketIndexByKey.length) {
-            return priorityCount;
-        }
-
-        int bucketIndex = bucketIndexByKey[key];
-        if (bucketIndex < 0) {
-            return priorityCount;
-        }
-
-        for (int i = 0; i < priorityCount; i++) {
-            if (priorityBucketIndexes[i] == bucketIndex) {
-                return priorityCount;
-            }
-        }
-
-        priorityBucketIndexes[priorityCount] = bucketIndex;
-        return priorityCount + 1;
-    }
-
-    private boolean containsPriorityIndex(int[] priorityBucketIndexes, int priorityCount, int bucketIndex) {
-        for (int i = 0; i < priorityCount; i++) {
-            if (priorityBucketIndexes[i] == bucketIndex) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void scanBucketByIndex(QueryVector queryVector, Top5Selector top5, int bucketIndex) {
-        BucketMetadata bucket = buckets[bucketIndex];
-        if (bucket.count() <= 0) {
+        int exactKey = RuntimeBucketKeyEncoder.encode(binaryBucket, hourBucket, dayBucket, txBucket);
+        visitBucket(queryVector, top5, visited, exactKey);
+        if (top5.isFull()) {
             return;
         }
 
-        int start = bucket.startVector();
-        int end = start + bucket.count();
+        // Camada 1: vizinhanca curta
+        visitHourDayTxWindow(queryVector, top5, visited, binaryBucket, hourBucket, dayBucket, txBucket, 1, 1, 1, exactKey);
+        if (top5.isFull()) {
+            return;
+        }
 
+        // Camada 2: mesmo dia, horas proximas, todos os tx
+        visitSameDayHourWindowAllTx(queryVector, top5, visited, binaryBucket, hourBucket, dayBucket, 2);
+        if (top5.isFull()) {
+            return;
+        }
+
+        // Camada 3: mesma hora, dias proximos, tx proximo
+        visitSameHourDayWindowTxWindow(queryVector, top5, visited, binaryBucket, hourBucket, dayBucket, txBucket, 2, 1);
+        if (top5.isFull()) {
+            return;
+        }
+
+        // Camada 4: mesmo dia, todas as horas, todos os tx
+        visitSameDayAllHoursAllTx(queryVector, top5, visited, binaryBucket, dayBucket);
+        if (top5.isFull()) {
+            return;
+        }
+
+        // Camada 5: dias vizinhos completos no mesmo binary bucket
+        visitNeighborDaysAllHoursAllTx(queryVector, top5, visited, binaryBucket, dayBucket, 1);
+    }
+
+    private void visitBucket(QueryVector queryVector, Top5Selector top5, boolean[] visited, int bucketKey) {
+        if (bucketKey < 0 || bucketKey >= Constants.BUCKET_COUNT) {
+            return;
+        }
+        if (visited[bucketKey]) {
+            return;
+        }
+        visited[bucketKey] = true;
+
+        int start = bucketStarts[bucketKey];
+        int end = bucketStarts[bucketKey + 1];
         for (int row = start; row < end; row++) {
             scanRow(queryVector, top5, row);
         }
     }
 
     private void scanRow(QueryVector queryVector, Top5Selector top5, int row) {
-        int offset = row * Constants.VECTOR_STRIDE;
-        float dist = DistanceKernel.squaredDistanceEarlyAbort(
+        int offset = row * Constants.VECTOR_DIMENSIONS;
+        long dist = DistanceKernel.squaredDistanceEarlyAbort(
             queryVector.values,
             vectors,
             offset,
@@ -166,21 +131,122 @@ public final class ExactKnnSearchEngine implements SearchEngine {
         }
     }
 
-    private static int[] buildBucketIndexByKey(BucketMetadata[] buckets) {
-        int maxKey = 0;
-        for (BucketMetadata bucket : buckets) {
-            if (bucket.key() > maxKey) {
-                maxKey = bucket.key();
+    private void visitHourDayTxWindow(
+        QueryVector queryVector,
+        Top5Selector top5,
+        boolean[] visited,
+        int binaryBucket,
+        int hourBucket,
+        int dayBucket,
+        int txBucket,
+        int hourRadius,
+        int dayRadius,
+        int txRadius,
+        int skipKey
+    ) {
+        int hourStart = Math.max(0, hourBucket - hourRadius);
+        int hourEnd = Math.min(Constants.HOURS - 1, hourBucket + hourRadius);
+
+        int dayStart = Math.max(0, dayBucket - dayRadius);
+        int dayEnd = Math.min(Constants.DAYS - 1, dayBucket + dayRadius);
+
+        int txStart = Math.max(0, txBucket - txRadius);
+        int txEnd = Math.min(Constants.TX_BUCKETS - 1, txBucket + txRadius);
+
+        for (int h = hourStart; h <= hourEnd; h++) {
+            for (int d = dayStart; d <= dayEnd; d++) {
+                for (int t = txStart; t <= txEnd; t++) {
+                    int key = RuntimeBucketKeyEncoder.encode(binaryBucket, h, d, t);
+                    if (key == skipKey) {
+                        continue;
+                    }
+                    visitBucket(queryVector, top5, visited, key);
+                }
             }
         }
+    }
 
-        int[] indexByKey = new int[maxKey + 1];
-        Arrays.fill(indexByKey, -1);
+    private void visitSameDayHourWindowAllTx(
+        QueryVector queryVector,
+        Top5Selector top5,
+        boolean[] visited,
+        int binaryBucket,
+        int hourBucket,
+        int dayBucket,
+        int hourRadius
+    ) {
+        int hourStart = Math.max(0, hourBucket - hourRadius);
+        int hourEnd = Math.min(Constants.HOURS - 1, hourBucket + hourRadius);
 
-        for (int i = 0; i < buckets.length; i++) {
-            indexByKey[buckets[i].key()] = i;
+        for (int h = hourStart; h <= hourEnd; h++) {
+            for (int t = 0; t < Constants.TX_BUCKETS; t++) {
+                int key = RuntimeBucketKeyEncoder.encode(binaryBucket, h, dayBucket, t);
+                visitBucket(queryVector, top5, visited, key);
+            }
         }
+    }
 
-        return indexByKey;
+    private void visitSameHourDayWindowTxWindow(
+        QueryVector queryVector,
+        Top5Selector top5,
+        boolean[] visited,
+        int binaryBucket,
+        int hourBucket,
+        int dayBucket,
+        int txBucket,
+        int dayRadius,
+        int txRadius
+    ) {
+        int dayStart = Math.max(0, dayBucket - dayRadius);
+        int dayEnd = Math.min(Constants.DAYS - 1, dayBucket + dayRadius);
+
+        int txStart = Math.max(0, txBucket - txRadius);
+        int txEnd = Math.min(Constants.TX_BUCKETS - 1, txBucket + txRadius);
+
+        for (int d = dayStart; d <= dayEnd; d++) {
+            for (int t = txStart; t <= txEnd; t++) {
+                int key = RuntimeBucketKeyEncoder.encode(binaryBucket, hourBucket, d, t);
+                visitBucket(queryVector, top5, visited, key);
+            }
+        }
+    }
+
+    private void visitSameDayAllHoursAllTx(
+        QueryVector queryVector,
+        Top5Selector top5,
+        boolean[] visited,
+        int binaryBucket,
+        int dayBucket
+    ) {
+        for (int h = 0; h < Constants.HOURS; h++) {
+            for (int t = 0; t < Constants.TX_BUCKETS; t++) {
+                int key = RuntimeBucketKeyEncoder.encode(binaryBucket, h, dayBucket, t);
+                visitBucket(queryVector, top5, visited, key);
+            }
+        }
+    }
+
+    private void visitNeighborDaysAllHoursAllTx(
+        QueryVector queryVector,
+        Top5Selector top5,
+        boolean[] visited,
+        int binaryBucket,
+        int dayBucket,
+        int dayRadius
+    ) {
+        int dayStart = Math.max(0, dayBucket - dayRadius);
+        int dayEnd = Math.min(Constants.DAYS - 1, dayBucket + dayRadius);
+
+        for (int d = dayStart; d <= dayEnd; d++) {
+            if (d == dayBucket) {
+                continue;
+            }
+            for (int h = 0; h < Constants.HOURS; h++) {
+                for (int t = 0; t < Constants.TX_BUCKETS; t++) {
+                    int key = RuntimeBucketKeyEncoder.encode(binaryBucket, h, d, t);
+                    visitBucket(queryVector, top5, visited, key);
+                }
+            }
+        }
     }
 }

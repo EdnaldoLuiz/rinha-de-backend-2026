@@ -2,6 +2,7 @@ package com.expedit.rinha2026.infra.index;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.expedit.rinha2026.domain.Constants;
 import org.junit.jupiter.api.Test;
 
 class ReferenceDatasetLoaderTest {
@@ -21,6 +22,6 @@ class ReferenceDatasetLoaderTest {
         assertEquals(0, index.labels()[0]);
         assertEquals(1, index.labels()[1]);
         assertEquals(1, index.labels()[2]);
-        assertEquals(3 * 16, index.vectors().length);
+        assertEquals(3 * Constants.VECTOR_DIMENSIONS, index.vectors().length);
     }
 }

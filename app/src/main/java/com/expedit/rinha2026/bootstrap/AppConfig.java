@@ -10,7 +10,7 @@ public record AppConfig(
 ) {
     public static AppConfig fromEnv() {
         String rawPort = System.getenv().getOrDefault("PORT", "9999");
-        String rawServerThreads = System.getenv().getOrDefault("SERVER_THREADS", "2");
+        String rawServerThreads = System.getenv().getOrDefault("SERVER_THREADS", "1");
         String normalization = System.getenv().getOrDefault("NORMALIZATION_FILE", "classpath:normalization.json");
         String mccRisk = System.getenv().getOrDefault("MCC_RISK_FILE", "classpath:mcc_risk.json");
         String references = System.getenv().getOrDefault("REFERENCES_FILE", "classpath:references.json");

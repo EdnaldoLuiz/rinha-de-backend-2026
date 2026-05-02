@@ -12,7 +12,6 @@ public final class BinaryIndexLoader {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
             int magic = in.readInt();
             int version = in.readInt();
-            int stride = in.readInt();
             int dimensions = in.readInt();
             int vectorCount = in.readInt();
             int bucketCount = in.readInt();
@@ -23,41 +22,27 @@ public final class BinaryIndexLoader {
             if (version != BinaryIndexFormat.VERSION) {
                 throw new IOException("Unsupported index version: " + version);
             }
-            if (stride != Constants.VECTOR_STRIDE) {
-                throw new IOException("Unsupported index stride: " + stride);
-            }
             if (dimensions != Constants.VECTOR_DIMENSIONS) {
                 throw new IOException("Unsupported dimensions: " + dimensions);
             }
-            if (vectorCount < 0 || bucketCount < 0) {
-                throw new IOException("Invalid counts: vectors=" + vectorCount + " buckets=" + bucketCount);
+            if (bucketCount != Constants.BUCKET_COUNT) {
+                throw new IOException("Unsupported bucket count: " + bucketCount);
             }
 
-            BucketMetadata[] buckets = new BucketMetadata[bucketCount];
-            for (int b = 0; b < bucketCount; b++) {
-                int key = in.readInt();
-                int startVector = in.readInt();
-                int count = in.readInt();
-                float[] minBounds = new float[dimensions];
-                float[] maxBounds = new float[dimensions];
-                for (int i = 0; i < dimensions; i++) {
-                    minBounds[i] = in.readFloat();
-                }
-                for (int i = 0; i < dimensions; i++) {
-                    maxBounds[i] = in.readFloat();
-                }
-                buckets[b] = new BucketMetadata(key, startVector, count, minBounds, maxBounds);
+            int[] bucketStarts = new int[bucketCount + 1];
+            for (int i = 0; i < bucketStarts.length; i++) {
+                bucketStarts[i] = in.readInt();
             }
 
-            float[] vectors = new float[vectorCount * stride];
+            short[] vectors = new short[vectorCount * dimensions];
             for (int i = 0; i < vectors.length; i++) {
-                vectors[i] = in.readFloat();
+                vectors[i] = in.readShort();
             }
 
             byte[] labels = new byte[vectorCount];
             in.readFully(labels);
 
-            return new LoadedIndex(dimensions, stride, vectors, labels, buckets);
+            return new LoadedIndex(dimensions, vectors, labels, bucketStarts);
         }
     }
 

@@ -41,19 +41,35 @@ public final class ReferenceDatasetLoader {
         }
 
         int n = vectorsList.size();
-        float[] vectors = new float[n * Constants.VECTOR_STRIDE];
+        short[] vectors = new short[n * Constants.VECTOR_DIMENSIONS];
         byte[] labels = new byte[n];
 
         for (int row = 0; row < n; row++) {
             float[] src = vectorsList.get(row);
-            int offset = row * Constants.VECTOR_STRIDE;
-            System.arraycopy(src, 0, vectors, offset, Constants.VECTOR_DIMENSIONS);
-            vectors[offset + 14] = 0f;
-            vectors[offset + 15] = 0f;
+            int offset = row * Constants.VECTOR_DIMENSIONS;
+            for (int d = 0; d < Constants.VECTOR_DIMENSIONS; d++) {
+                vectors[offset + d] = quantize(src[d]);
+            }
             labels[row] = labelsList.get(row);
         }
 
-        return LoadedIndex.fromVectors(vectors, labels);
+        return new LoadedIndex(
+            Constants.VECTOR_DIMENSIONS,
+            vectors,
+            labels,
+            new int[Constants.BUCKET_COUNT + 1]
+        );
+    }
+
+    private short quantize(float value) {
+        int scaled = Math.round(value * Constants.VECTOR_SCALE);
+        if (scaled > Short.MAX_VALUE) {
+            return Short.MAX_VALUE;
+        }
+        if (scaled < Short.MIN_VALUE) {
+            return Short.MIN_VALUE;
+        }
+        return (short) scaled;
     }
 
     private ParsedRecord parseRecord(String json, int objectStart) {

@@ -44,7 +44,7 @@ cleanup() {
   echo "[k6] derrubando ambiente local..."
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+# trap cleanup EXIT
 
 echo "[k6] validando regras do compose local..."
 COMPOSE_FILE="$COMPOSE_FILE" "$ROOT_DIR/scripts/verify-rules.sh"
