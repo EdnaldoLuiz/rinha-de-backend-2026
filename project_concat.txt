@@ -1,0 +1,1504 @@
+Projeto: /home/luiz/Desktop/projetos/pessoais/projeto/rinha-backend
+Total de arquivos: 20
+
+============================== app/src/main/java/com/expedit/rinha2026/search/ExactKnnSearchEngine.java ==============================
+package com.expedit.rinha2026.search;
+
+import com.expedit.rinha2026.domain.Constants;
+import com.expedit.rinha2026.domain.QueryVector;
+import com.expedit.rinha2026.domain.SearchResult;
+import com.expedit.rinha2026.infra.index.BucketMetadata;
+import java.util.Arrays;
+
+public final class ExactKnnSearchEngine implements SearchEngine {
+    private final float[] vectors;
+    private final byte[] labels;
+    private final BucketMetadata[] buckets;
+    private final BucketScanPlanner bucketScanPlanner;
+    private final ThreadLocal<SearchScratch> scratch;
+    private final int[] bucketIndexByKey;
+
+    public ExactKnnSearchEngine(float[] vectors, byte[] labels) {
+        this(vectors, labels, new BucketMetadata[0]);
+    }
+
+    public ExactKnnSearchEngine(float[] vectors, byte[] labels, BucketMetadata[] buckets) {
+        this.vectors = vectors;
+        this.labels = labels;
+        this.buckets = buckets == null ? new BucketMetadata[0] : buckets;
+        this.bucketScanPlanner = new BucketScanPlanner();
+        this.scratch = ThreadLocal.withInitial(() -> new SearchScratch(this.buckets.length));
+        this.bucketIndexByKey = buildBucketIndexByKey(this.buckets);
+    }
+
+    public static ExactKnnSearchEngine empty() {
+        return new ExactKnnSearchEngine(new float[0], new byte[0], new BucketMetadata[0]);
+    }
+
+    @Override
+    public SearchResult search(QueryVector queryVector) {
+        SearchResult result = new SearchResult();
+        if (labels.length == 0) {
+            result.fraudCount = 0;
+            result.worstDistance = Float.POSITIVE_INFINITY;
+            return result;
+        }
+
+        SearchScratch scratchState = scratch.get();
+        Top5Selector top5 = scratchState.top5;
+        top5.reset();
+
+        if (buckets.length > 0) {
+            scanByBuckets(queryVector, top5, scratchState);
+        } else {
+            scanAll(queryVector, top5);
+        }
+
+        result.fraudCount = top5.fraudCount();
+        result.worstDistance = top5.currentWorst();
+        return result;
+    }
+
+    private void scanAll(QueryVector queryVector, Top5Selector top5) {
+        for (int i = 0; i < labels.length; i++) {
+            int offset = i * Constants.VECTOR_STRIDE;
+            float dist = DistanceKernel.squaredDistanceEarlyAbort(queryVector.values, vectors, offset, top5.currentWorst());
+            if (dist < top5.currentWorst()) {
+                top5.offer(dist, labels[i]);
+            }
+        }
+    }
+
+    private void scanByBuckets(QueryVector queryVector, Top5Selector top5, SearchScratch scratchState) {
+        int queryBucketIndex = findQueryBucketIndex(queryVector.values);
+        if (queryBucketIndex >= 0) {
+            scanBucket(queryVector, top5, buckets[queryBucketIndex]);
+        }
+
+        int size = bucketScanPlanner.plan(
+            buckets,
+            queryVector,
+            scratchState.order,
+            scratchState.bounds,
+            top5.currentWorst(),
+            queryBucketIndex
+        );
+
+        for (int i = 0; i < size; i++) {
+            float lowerBound = scratchState.bounds[i];
+            if (lowerBound >= top5.currentWorst()) {
+                break;
+            }
+
+            BucketMetadata bucket = buckets[scratchState.order[i]];
+            if (bucket.count() <= 0) {
+                continue;
+            }
+
+            scanBucket(queryVector, top5, bucket);
+        }
+    }
+
+    private void scanBucket(QueryVector queryVector, Top5Selector top5, BucketMetadata bucket) {
+        if (bucket.count() <= 0) {
+            return;
+        }
+
+        int start = bucket.startVector();
+        int end = start + bucket.count();
+        for (int row = start; row < end; row++) {
+            int offset = row * Constants.VECTOR_STRIDE;
+            float dist = DistanceKernel.squaredDistanceEarlyAbort(queryVector.values, vectors, offset, top5.currentWorst());
+            if (dist < top5.currentWorst()) {
+                top5.offer(dist, labels[row]);
+            }
+        }
+    }
+
+    private int findQueryBucketIndex(float[] query) {
+        int key = RuntimeBucketKeyEncoder.encode(query);
+        if (key < 0 || key >= bucketIndexByKey.length) {
+            return -1;
+        }
+        return bucketIndexByKey[key];
+    }
+
+    private static int[] buildBucketIndexByKey(BucketMetadata[] buckets) {
+        int maxKey = 0;
+        for (BucketMetadata bucket : buckets) {
+            if (bucket.key() > maxKey) {
+                maxKey = bucket.key();
+            }
+        }
+
+        int[] indexByKey = new int[maxKey + 1];
+        Arrays.fill(indexByKey, -1);
+        for (int i = 0; i < buckets.length; i++) {
+            indexByKey[buckets[i].key()] = i;
+        }
+        return indexByKey;
+    }
+
+    private static final class SearchScratch {
+        private final Top5Selector top5 = new Top5Selector();
+        private final int[] order;
+        private final float[] bounds;
+
+        private SearchScratch(int bucketCount) {
+            this.order = new int[bucketCount];
+            this.bounds = new float[bucketCount];
+        }
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/parser/PayloadParser.java ==============================
+package com.expedit.rinha2026.parser;
+
+import com.expedit.rinha2026.domain.FraudRequestFields;
+
+public final class PayloadParser {
+    private static final String KEY_TRANSACTION = "\"transaction\"";
+    private static final String KEY_CUSTOMER = "\"customer\"";
+    private static final String KEY_MERCHANT = "\"merchant\"";
+    private static final String KEY_TERMINAL = "\"terminal\"";
+    private static final String KEY_LAST_TRANSACTION = "\"last_transaction\"";
+
+    private static final String KEY_AMOUNT = "\"amount\"";
+    private static final String KEY_INSTALLMENTS = "\"installments\"";
+    private static final String KEY_REQUESTED_AT = "\"requested_at\"";
+    private static final String KEY_AVG_AMOUNT = "\"avg_amount\"";
+    private static final String KEY_TX_COUNT_24H = "\"tx_count_24h\"";
+    private static final String KEY_KNOWN_MERCHANTS = "\"known_merchants\"";
+    private static final String KEY_ID = "\"id\"";
+    private static final String KEY_MCC = "\"mcc\"";
+    private static final String KEY_IS_ONLINE = "\"is_online\"";
+    private static final String KEY_CARD_PRESENT = "\"card_present\"";
+    private static final String KEY_KM_FROM_HOME = "\"km_from_home\"";
+    private static final String KEY_TIMESTAMP = "\"timestamp\"";
+    private static final String KEY_KM_FROM_CURRENT = "\"km_from_current\"";
+
+    public FraudRequestFields parse(String json) {
+        FraudRequestFields req = new FraudRequestFields();
+
+        int transactionIdx = findRequiredKey(json, KEY_TRANSACTION, 0);
+        req.amount = parseDoubleByKey(json, KEY_AMOUNT, transactionIdx);
+        req.installments = parseIntByKey(json, KEY_INSTALLMENTS, transactionIdx);
+        parseTimestampByKey(json, KEY_REQUESTED_AT, transactionIdx, req, true);
+
+        int customerIdx = findRequiredKey(json, KEY_CUSTOMER, 0);
+        req.customerAvgAmount = parseDoubleByKey(json, KEY_AVG_AMOUNT, customerIdx);
+        req.customerTxCount24h = parseIntByKey(json, KEY_TX_COUNT_24H, customerIdx);
+        parseKnownMerchants(json, customerIdx, req);
+
+        int merchantIdx = findRequiredKey(json, KEY_MERCHANT, 0);
+        req.merchantId = parseMerchantIdByKey(json, KEY_ID, merchantIdx);
+        req.merchantMcc = parseQuotedIntByKey(json, KEY_MCC, merchantIdx);
+        req.merchantAvgAmount = parseDoubleByKey(json, KEY_AVG_AMOUNT, merchantIdx);
+
+        int terminalIdx = findRequiredKey(json, KEY_TERMINAL, 0);
+        req.terminalIsOnline = parseBooleanByKey(json, KEY_IS_ONLINE, terminalIdx);
+        req.terminalCardPresent = parseBooleanByKey(json, KEY_CARD_PRESENT, terminalIdx);
+        req.terminalKmFromHome = parseDoubleByKey(json, KEY_KM_FROM_HOME, terminalIdx);
+
+        parseLastTransaction(json, req);
+
+        return req;
+    }
+
+    private void parseKnownMerchants(String json, int customerIdx, FraudRequestFields req) {
+        int keyIdx = findOptionalKey(json, KEY_KNOWN_MERCHANTS, customerIdx);
+        if (keyIdx < 0) {
+            return;
+        }
+
+        int valueStart = findValueStart(json, keyIdx);
+        if (valueStart >= json.length() || json.charAt(valueStart) != '[') {
+            throw invalidPayload("known_merchants must be an array");
+        }
+
+        int idx = valueStart + 1;
+        while (idx < json.length()) {
+            idx = skipWs(json, idx);
+            if (idx >= json.length()) {
+                break;
+            }
+
+            char c = json.charAt(idx);
+            if (c == ']') {
+                return;
+            }
+            if (c == ',') {
+                idx++;
+                continue;
+            }
+            if (c != '"') {
+                throw invalidPayload("known_merchants must contain strings");
+            }
+
+            int tokenStart = idx + 1;
+            int tokenEnd = findClosingQuote(json, tokenStart);
+            if (req.knownMerchantCount < req.knownMerchantIds.length) {
+                req.knownMerchantIds[req.knownMerchantCount++] = parseMerchantIdFromRange(json, tokenStart, tokenEnd);
+            }
+            idx = tokenEnd + 1;
+        }
+    }
+
+    private void parseLastTransaction(String json, FraudRequestFields req) {
+        int keyIdx = findOptionalKey(json, KEY_LAST_TRANSACTION, 0);
+        if (keyIdx < 0) {
+            req.hasLastTransaction = false;
+            return;
+        }
+
+        int valueStart = findValueStart(json, keyIdx);
+        if (json.startsWith("null", valueStart)) {
+            req.hasLastTransaction = false;
+            return;
+        }
+
+        req.hasLastTransaction = true;
+        parseTimestampByKey(json, KEY_TIMESTAMP, keyIdx, req, false);
+        req.lastKmFromCurrent = parseDoubleByKey(json, KEY_KM_FROM_CURRENT, keyIdx);
+    }
+
+    private double parseDoubleByKey(String json, String quotedKey, int fromIndex) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int start = findValueStart(json, keyIdx);
+        int end = findValueEnd(json, start);
+        return parseDoubleFromRange(json, start, end);
+    }
+
+    private int parseIntByKey(String json, String quotedKey, int fromIndex) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int start = findValueStart(json, keyIdx);
+        int end = findValueEnd(json, start);
+        return parseIntFromRange(json, start, end);
+    }
+
+    private int parseQuotedIntByKey(String json, String quotedKey, int fromIndex) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int tokenStart = findQuotedValueStart(json, keyIdx);
+        int tokenEnd = findClosingQuote(json, tokenStart);
+        return parseIntFromRange(json, tokenStart, tokenEnd);
+    }
+
+    private int parseMerchantIdByKey(String json, String quotedKey, int fromIndex) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int tokenStart = findQuotedValueStart(json, keyIdx);
+        int tokenEnd = findClosingQuote(json, tokenStart);
+        return parseMerchantIdFromRange(json, tokenStart, tokenEnd);
+    }
+
+    private boolean parseBooleanByKey(String json, String quotedKey, int fromIndex) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int start = findValueStart(json, keyIdx);
+        if (json.startsWith("true", start)) {
+            return true;
+        }
+        if (json.startsWith("false", start)) {
+            return false;
+        }
+        throw invalidPayload("invalid boolean for key " + quotedKey);
+    }
+
+    private void parseTimestampByKey(String json, String quotedKey, int fromIndex, FraudRequestFields req, boolean requestedTimestamp) {
+        int keyIdx = findRequiredKey(json, quotedKey, fromIndex);
+        int start = findQuotedValueStart(json, keyIdx);
+        int end = findClosingQuote(json, start);
+        int length = end - start;
+        if (length < 19) {
+            throw invalidPayload("timestamp too short");
+        }
+
+        if (json.charAt(start + 4) != '-'
+            || json.charAt(start + 7) != '-'
+            || json.charAt(start + 10) != 'T'
+            || json.charAt(start + 13) != ':'
+            || json.charAt(start + 16) != ':') {
+            throw invalidPayload("invalid timestamp format");
+        }
+
+        int year = parseFourDigits(json, start);
+        int month = parseTwoDigits(json, start + 5);
+        int day = parseTwoDigits(json, start + 8);
+        int hour = parseTwoDigits(json, start + 11);
+        int minute = parseTwoDigits(json, start + 14);
+        int second = parseTwoDigits(json, start + 17);
+
+        if (requestedTimestamp) {
+            req.requestedYear = year;
+            req.requestedMonth = month;
+            req.requestedDay = day;
+            req.requestedHour = hour;
+            req.requestedMinute = minute;
+            req.requestedSecond = second;
+            return;
+        }
+
+        req.lastYear = year;
+        req.lastMonth = month;
+        req.lastDay = day;
+        req.lastHour = hour;
+        req.lastMinute = minute;
+        req.lastSecond = second;
+    }
+
+    private int parseTwoDigits(String json, int start) {
+        return (parseDigit(json, start) * 10) + parseDigit(json, start + 1);
+    }
+
+    private int parseFourDigits(String json, int start) {
+        return (parseDigit(json, start) * 1000)
+            + (parseDigit(json, start + 1) * 100)
+            + (parseDigit(json, start + 2) * 10)
+            + parseDigit(json, start + 3);
+    }
+
+    private int parseDigit(String json, int index) {
+        if (index < 0 || index >= json.length()) {
+            throw invalidPayload("unexpected end while parsing digit");
+        }
+        char c = json.charAt(index);
+        if (c < '0' || c > '9') {
+            throw invalidPayload("invalid digit in numeric field");
+        }
+        return c - '0';
+    }
+
+    private int parseMerchantIdFromRange(String json, int start, int end) {
+        int separator = -1;
+        for (int i = start; i < end; i++) {
+            if (json.charAt(i) == '-') {
+                separator = i;
+                break;
+            }
+        }
+        if (separator < 0 || separator + 1 >= end) {
+            return 0;
+        }
+        return parseIntFromRange(json, separator + 1, end);
+    }
+
+    private int parseIntFromRange(String json, int start, int end) {
+        if (start >= end) {
+            throw invalidPayload("empty integer token");
+        }
+
+        int i = start;
+        boolean negative = false;
+        char sign = json.charAt(i);
+        if (sign == '+' || sign == '-') {
+            negative = sign == '-';
+            i++;
+        }
+
+        if (i >= end) {
+            throw invalidPayload("invalid integer token");
+        }
+
+        int value = 0;
+        boolean hasDigits = false;
+        while (i < end) {
+            char c = json.charAt(i);
+            if (c < '0' || c > '9') {
+                throw invalidPayload("invalid integer token");
+            }
+            hasDigits = true;
+            int digit = c - '0';
+            if (value > (Integer.MAX_VALUE - digit) / 10) {
+                throw invalidPayload("integer overflow");
+            }
+            value = (value * 10) + digit;
+            i++;
+        }
+
+        if (!hasDigits) {
+            throw invalidPayload("invalid integer token");
+        }
+
+        return negative ? -value : value;
+    }
+
+    private double parseDoubleFromRange(String json, int start, int end) {
+        if (start >= end) {
+            throw invalidPayload("empty decimal token");
+        }
+
+        int i = start;
+        boolean negative = false;
+
+        char first = json.charAt(i);
+        if (first == '+' || first == '-') {
+            negative = (first == '-');
+            i++;
+        }
+
+        if (i >= end) {
+            throw invalidPayload("invalid decimal token");
+        }
+
+        double value = 0d;
+        boolean hasIntegralDigits = false;
+        while (i < end) {
+            char c = json.charAt(i);
+            if (c < '0' || c > '9') {
+                break;
+            }
+            hasIntegralDigits = true;
+            value = (value * 10d) + (c - '0');
+            i++;
+        }
+
+        if (i < end && json.charAt(i) == '.') {
+            i++;
+            double fractionScale = 1d;
+            boolean hasFractionDigits = false;
+            while (i < end) {
+                char c = json.charAt(i);
+                if (c < '0' || c > '9') {
+                    break;
+                }
+                hasFractionDigits = true;
+                fractionScale *= 10d;
+                value += (c - '0') / fractionScale;
+                i++;
+            }
+            if (!hasIntegralDigits && !hasFractionDigits) {
+                throw invalidPayload("invalid decimal token");
+            }
+        } else if (!hasIntegralDigits) {
+            throw invalidPayload("invalid decimal token");
+        }
+
+        if (i < end && (json.charAt(i) == 'e' || json.charAt(i) == 'E')) {
+            i++;
+            if (i >= end) {
+                throw invalidPayload("invalid decimal exponent");
+            }
+
+            boolean negativeExponent = false;
+            char sign = json.charAt(i);
+            if (sign == '+' || sign == '-') {
+                negativeExponent = sign == '-';
+                i++;
+            }
+
+            if (i >= end) {
+                throw invalidPayload("invalid decimal exponent");
+            }
+
+            int exponent = 0;
+            boolean hasExponentDigits = false;
+            while (i < end) {
+                char c = json.charAt(i);
+                if (c < '0' || c > '9') {
+                    break;
+                }
+                hasExponentDigits = true;
+                exponent = (exponent * 10) + (c - '0');
+                i++;
+            }
+            if (!hasExponentDigits) {
+                throw invalidPayload("invalid decimal exponent");
+            }
+            if (negativeExponent) {
+                exponent = -exponent;
+            }
+            value *= Math.pow(10d, exponent);
+        }
+
+        if (i != end) {
+            throw invalidPayload("invalid decimal token");
+        }
+
+        return negative ? -value : value;
+    }
+
+    private int findRequiredKey(String json, String quotedKey, int fromIndex) {
+        int idx = findOptionalKey(json, quotedKey, fromIndex);
+        if (idx < 0) {
+            throw invalidPayload("missing key " + quotedKey);
+        }
+        return idx;
+    }
+
+    private int findOptionalKey(String json, String quotedKey, int fromIndex) {
+        return json.indexOf(quotedKey, Math.max(fromIndex, 0));
+    }
+
+    private int findQuotedValueStart(String json, int keyIdx) {
+        int valueStart = findValueStart(json, keyIdx);
+        if (valueStart >= json.length() || json.charAt(valueStart) != '"') {
+            throw invalidPayload("expected quoted value");
+        }
+        return valueStart + 1;
+    }
+
+    private int findClosingQuote(String json, int start) {
+        int end = json.indexOf('"', start);
+        if (end < 0) {
+            throw invalidPayload("unterminated quoted value");
+        }
+        return end;
+    }
+
+    private int findValueStart(String json, int keyIdx) {
+        int colon = json.indexOf(':', keyIdx);
+        if (colon < 0) {
+            throw invalidPayload("missing ':' after key");
+        }
+        return skipWs(json, colon + 1);
+    }
+
+    private int findValueEnd(String json, int start) {
+        int i = start;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == ',' || c == '}' || c == ']'
+                || c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+                break;
+            }
+            i++;
+        }
+        return i;
+    }
+
+    private IllegalArgumentException invalidPayload(String message) {
+        return new IllegalArgumentException(message);
+    }
+
+    private int skipWs(String json, int index) {
+        int i = index;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c != ' ' && c != '\n' && c != '\r' && c != '\t') {
+                return i;
+            }
+            i++;
+        }
+        return i;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/http/FraudScoreHandler.java ==============================
+package com.expedit.rinha2026.http;
+
+import com.expedit.rinha2026.domain.FraudRequestFields;
+import com.expedit.rinha2026.domain.QueryVector;
+import com.expedit.rinha2026.domain.SearchResult;
+import com.expedit.rinha2026.fallback.FallbackDecision;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
+public final class FraudScoreHandler implements HttpHandler {
+    private static final byte[] BAD_REQUEST = "{\"error\":\"invalid payload\"}".getBytes(StandardCharsets.UTF_8);
+
+    private final HttpRequestContext ctx;
+    private final ThreadLocal<QueryVector> queryVectors = ThreadLocal.withInitial(QueryVector::new);
+
+    public FraudScoreHandler(HttpRequestContext ctx) {
+        this.ctx = ctx;
+    }
+
+    @Override
+    public void handle(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            exchange.sendResponseHeaders(405, -1);
+            exchange.close();
+            return;
+        }
+
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+
+        FraudRequestFields req;
+        try {
+            req = ctx.parser().parse(body);
+        } catch (RuntimeException parseError) {
+            ctx.responseWriter().writeJson(exchange, 400, BAD_REQUEST);
+            return;
+        }
+
+        QueryVector queryVector = queryVectors.get();
+        try {
+            ctx.vectorizer().vectorize(req, queryVector);
+            SearchResult result = ctx.searchEngine().search(queryVector);
+            ctx.responseWriter().writeJson(exchange, 200, ctx.responseBuffers().byFraudCount(result.fraudCount));
+        } catch (Throwable t) {
+            FallbackDecision fallback = ctx.fallbackScorer().score(req);
+            ctx.responseWriter().writeJson(exchange, 200, ctx.responseBuffers().byFraudCount(fallback.fraudCount()));
+        }
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/http/HttpServerBootstrap.java ==============================
+package com.expedit.rinha2026.http;
+
+import com.expedit.rinha2026.bootstrap.AppConfig;
+import com.expedit.rinha2026.bootstrap.ReadinessState;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.concurrent.Executors;
+
+public final class HttpServerBootstrap {
+    public HttpServer start(AppConfig appConfig, ReadinessState readinessState, HttpRequestContext context) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(appConfig.port()), 0);
+        server.createContext("/ready", new ErrorShieldHandler(new ReadyHandler(readinessState)));
+        server.createContext("/fraud-score", new ErrorShieldHandler(new FraudScoreHandler(context)));
+        server.setExecutor(Executors.newFixedThreadPool(appConfig.serverThreads()));
+        server.start();
+        return server;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/vectorizer/FraudVectorizer.java ==============================
+package com.expedit.rinha2026.vectorizer;
+
+import com.expedit.rinha2026.domain.FraudRequestFields;
+import com.expedit.rinha2026.domain.MccRiskTable;
+import com.expedit.rinha2026.domain.NormalizationConfig;
+import com.expedit.rinha2026.domain.QueryVector;
+
+public final class FraudVectorizer {
+    private final NormalizationConfig normalization;
+    private final MccRiskTable mccRiskTable;
+
+    public FraudVectorizer(NormalizationConfig normalization, MccRiskTable mccRiskTable) {
+        this.normalization = normalization;
+        this.mccRiskTable = mccRiskTable;
+    }
+
+    public void vectorize(FraudRequestFields req, QueryVector queryVector) {
+        float[] q = queryVector.values;
+
+        q[0] = Clamp.clamp01((float) (req.amount / normalization.maxAmount));
+        q[1] = Clamp.clamp01((float) (req.installments / normalization.maxInstallments));
+
+        double denom = req.customerAvgAmount <= 0d ? 1d : req.customerAvgAmount;
+        q[2] = Clamp.clamp01((float) ((req.amount / denom) / normalization.maxAmountVsAvgRatio));
+
+        q[3] = Clamp.clamp01(req.requestedHour / 23f);
+        q[4] = Clamp.clamp01(DayOfWeekCalculator.dayOfWeek(req.requestedYear, req.requestedMonth, req.requestedDay) / 6f);
+
+        if (!req.hasLastTransaction) {
+            q[5] = -1f;
+            q[6] = -1f;
+        } else {
+            long minutes = MinutesSinceLastTxCalculator.minutesBetween(
+                req.requestedYear,
+                req.requestedMonth,
+                req.requestedDay,
+                req.requestedHour,
+                req.requestedMinute,
+                req.requestedSecond,
+                req.lastYear,
+                req.lastMonth,
+                req.lastDay,
+                req.lastHour,
+                req.lastMinute,
+                req.lastSecond
+            );
+            q[5] = Clamp.clamp01((float) (minutes / normalization.maxMinutes));
+            q[6] = Clamp.clamp01((float) (req.lastKmFromCurrent / normalization.maxKm));
+        }
+
+        q[7] = Clamp.clamp01((float) (req.terminalKmFromHome / normalization.maxKm));
+        q[8] = Clamp.clamp01((float) (req.customerTxCount24h / normalization.maxTxCount24h));
+        q[9] = req.terminalIsOnline ? 1f : 0f;
+        q[10] = req.terminalCardPresent ? 1f : 0f;
+        q[11] = isKnownMerchant(req.merchantId, req.knownMerchantIds, req.knownMerchantCount) ? 0f : 1f;
+        q[12] = Clamp.clamp01(mccRiskTable.lookupOrDefault(req.merchantMcc));
+        q[13] = Clamp.clamp01((float) (req.merchantAvgAmount / normalization.maxMerchantAvgAmount));
+
+        q[14] = 0f;
+        q[15] = 0f;
+    }
+
+    private boolean isKnownMerchant(int merchantId, int[] knownMerchantIds, int size) {
+        for (int i = 0; i < size; i++) {
+            if (knownMerchantIds[i] == merchantId) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/vectorizer/MinutesSinceLastTxCalculator.java ==============================
+package com.expedit.rinha2026.vectorizer;
+
+public final class MinutesSinceLastTxCalculator {
+    private MinutesSinceLastTxCalculator() {
+    }
+
+    public static long minutesBetween(
+        int year,
+        int month,
+        int day,
+        int hour,
+        int minute,
+        int second,
+        int lastYear,
+        int lastMonth,
+        int lastDay,
+        int lastHour,
+        int lastMinute,
+        int lastSecond
+    ) {
+        long currentEpochSeconds = UtcDateTimeMath.epochSecond(year, month, day, hour, minute, second);
+        long lastEpochSeconds = UtcDateTimeMath.epochSecond(lastYear, lastMonth, lastDay, lastHour, lastMinute, lastSecond);
+        long minutes = (currentEpochSeconds - lastEpochSeconds) / 60L;
+        return Math.max(minutes, 0L);
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/vectorizer/DayOfWeekCalculator.java ==============================
+package com.expedit.rinha2026.vectorizer;
+
+public final class DayOfWeekCalculator {
+    private DayOfWeekCalculator() {
+    }
+
+    public static int dayOfWeek(int year, int month, int day) {
+        return UtcDateTimeMath.dayOfWeekMondayZero(year, month, day);
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/search/DistanceKernel.java ==============================
+package com.expedit.rinha2026.search;
+
+public final class DistanceKernel {
+    private DistanceKernel() {
+    }
+
+    public static float squaredDistanceEarlyAbort(float[] query, float[] vectors, int offset, float currentWorst) {
+        float dist = 0f;
+        for (int i = 0; i < 14; i++) {
+            float d = query[i] - vectors[offset + i];
+            dist += d * d;
+            if (dist >= currentWorst) {
+                return dist;
+            }
+        }
+        return dist;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/search/Top5Selector.java ==============================
+package com.expedit.rinha2026.search;
+
+public final class Top5Selector {
+    private float d1 = Float.POSITIVE_INFINITY;
+    private float d2 = Float.POSITIVE_INFINITY;
+    private float d3 = Float.POSITIVE_INFINITY;
+    private float d4 = Float.POSITIVE_INFINITY;
+    private float d5 = Float.POSITIVE_INFINITY;
+
+    private byte l1;
+    private byte l2;
+    private byte l3;
+    private byte l4;
+    private byte l5;
+
+    public void reset() {
+        d1 = Float.POSITIVE_INFINITY;
+        d2 = Float.POSITIVE_INFINITY;
+        d3 = Float.POSITIVE_INFINITY;
+        d4 = Float.POSITIVE_INFINITY;
+        d5 = Float.POSITIVE_INFINITY;
+        l1 = l2 = l3 = l4 = l5 = 0;
+    }
+
+    public float currentWorst() {
+        return d5;
+    }
+
+    public void offer(float dist, byte label) {
+        if (dist < d1) {
+            d5 = d4; l5 = l4;
+            d4 = d3; l4 = l3;
+            d3 = d2; l3 = l2;
+            d2 = d1; l2 = l1;
+            d1 = dist; l1 = label;
+            return;
+        }
+        if (dist < d2) {
+            d5 = d4; l5 = l4;
+            d4 = d3; l4 = l3;
+            d3 = d2; l3 = l2;
+            d2 = dist; l2 = label;
+            return;
+        }
+        if (dist < d3) {
+            d5 = d4; l5 = l4;
+            d4 = d3; l4 = l3;
+            d3 = dist; l3 = label;
+            return;
+        }
+        if (dist < d4) {
+            d5 = d4; l5 = l4;
+            d4 = dist; l4 = label;
+            return;
+        }
+        if (dist < d5) {
+            d5 = dist;
+            l5 = label;
+        }
+    }
+
+    public int fraudCount() {
+        return l1 + l2 + l3 + l4 + l5;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/bootstrap/StartupLoader.java ==============================
+package com.expedit.rinha2026.bootstrap;
+
+import com.expedit.rinha2026.domain.MccRiskTable;
+import com.expedit.rinha2026.domain.NormalizationConfig;
+import com.expedit.rinha2026.fallback.FallbackScorer;
+import com.expedit.rinha2026.http.HttpRequestContext;
+import com.expedit.rinha2026.http.HttpServerBootstrap;
+import com.expedit.rinha2026.infra.config.MccRiskTableLoader;
+import com.expedit.rinha2026.infra.config.NormalizationConfigLoader;
+import com.expedit.rinha2026.infra.index.BinaryIndexLoader;
+import com.expedit.rinha2026.infra.index.LoadedIndex;
+import com.expedit.rinha2026.infra.index.ReferenceDatasetLoader;
+import com.expedit.rinha2026.infra.io.ResourceResolver;
+import com.expedit.rinha2026.parser.PayloadParser;
+import com.expedit.rinha2026.response.ResponseBuffers;
+import com.expedit.rinha2026.response.ResponseWriter;
+import com.expedit.rinha2026.search.ExactKnnSearchEngine;
+import com.expedit.rinha2026.search.SearchEngine;
+import com.expedit.rinha2026.vectorizer.FraudVectorizer;
+import java.nio.file.Path;
+
+public final class StartupLoader {
+    public void start(AppConfig appConfig, ReadinessState readinessState) throws Exception {
+        ResourceResolver resourceResolver = new ResourceResolver();
+
+        NormalizationConfig normalizationConfig = new NormalizationConfigLoader()
+            .load(resourceResolver.readUtf8(appConfig.normalizationLocation()));
+
+        MccRiskTable mccRiskTable = new MccRiskTableLoader()
+            .load(resourceResolver.readUtf8(appConfig.mccRiskLocation()));
+
+        LoadedIndex loadedIndex = loadIndex(appConfig, resourceResolver);
+        SearchEngine searchEngine = new ExactKnnSearchEngine(
+            loadedIndex.vectors(),
+            loadedIndex.labels(),
+            loadedIndex.buckets()
+        );
+
+        HttpRequestContext context = new HttpRequestContext(
+            new PayloadParser(),
+            new FraudVectorizer(normalizationConfig, mccRiskTable),
+            searchEngine,
+            new ResponseBuffers(),
+            new ResponseWriter(),
+            new FallbackScorer()
+        );
+
+        new HttpServerBootstrap().start(appConfig, readinessState, context);
+        readinessState.setReady(true);
+
+        System.out.printf("Startup ready on port %d with %d reference vectors.%n", appConfig.port(), loadedIndex.labels().length);
+    }
+
+    private LoadedIndex loadIndex(AppConfig appConfig, ResourceResolver resourceResolver) throws Exception {
+        if (appConfig.binaryIndexLocation() != null && !appConfig.binaryIndexLocation().isBlank()) {
+            return new BinaryIndexLoader().load(Path.of(appConfig.binaryIndexLocation()));
+        }
+
+        return new ReferenceDatasetLoader().load(resourceResolver.readUtf8(appConfig.referencesLocation()));
+    }
+}
+
+============================== tools/preprocessor/src/main/java/com/expedit/rinha2026/tools/preprocessor/PreprocessorMain.java ==============================
+package com.expedit.rinha2026.tools.preprocessor;
+
+import com.expedit.rinha2026.domain.Constants;
+import com.expedit.rinha2026.infra.index.LoadedIndex;
+import com.expedit.rinha2026.infra.index.ReferenceDatasetLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+public final class PreprocessorMain {
+    private static final String DEFAULT_INPUT = "resources/references.json.gz";
+    private static final String DEFAULT_FALLBACK_INPUT = "app/src/main/resources/references.json";
+    private static final String DEFAULT_OUTPUT = "app/src/main/resources/fraud-index.dat";
+
+    public static void main(String[] args) throws Exception {
+        Path input = args.length > 0 ? Path.of(args[0]) : defaultInputPath();
+        Path output = args.length > 1 ? Path.of(args[1]) : Path.of(DEFAULT_OUTPUT);
+
+        String json = new ReferenceJsonReader().read(input);
+        LoadedIndex parsed = new ReferenceDatasetLoader().load(json);
+
+        List<ReferenceRecord> records = toReferenceRecords(parsed);
+        LoadedIndex indexed = new BucketBoundsCalculator().buildIndexed(records);
+
+        new BinaryIndexWriter().write(output, indexed);
+
+        PreprocessorReport report = new PreprocessorReport(
+            indexed.labels().length,
+            indexed.buckets().length,
+            Files.size(output)
+        );
+
+        System.out.printf("Preprocessor done. vectors=%d buckets=%d output=%s bytes=%d%n",
+            report.vectors(),
+            report.buckets(),
+            output,
+            report.bytes());
+    }
+
+    private static List<ReferenceRecord> toReferenceRecords(LoadedIndex index) {
+        List<ReferenceRecord> records = new ArrayList<>(index.labels().length);
+        BucketKeyEncoder encoder = new BucketKeyEncoder();
+
+        for (int row = 0; row < index.labels().length; row++) {
+            int offset = row * index.stride();
+            float[] vector14 = new float[Constants.VECTOR_DIMENSIONS];
+            System.arraycopy(index.vectors(), offset, vector14, 0, Constants.VECTOR_DIMENSIONS);
+            int key = encoder.encode(vector14);
+            records.add(new ReferenceRecord(vector14, index.labels()[row], key));
+        }
+
+        return records;
+    }
+
+    private static Path defaultInputPath() {
+        Path gz = Path.of(DEFAULT_INPUT);
+        if (Files.exists(gz)) {
+            return gz;
+        }
+        return Path.of(DEFAULT_FALLBACK_INPUT);
+    }
+}
+
+============================== tools/preprocessor/src/main/java/com/expedit/rinha2026/tools/preprocessor/BucketBoundsCalculator.java ==============================
+package com.expedit.rinha2026.tools.preprocessor;
+
+import com.expedit.rinha2026.domain.Constants;
+import com.expedit.rinha2026.infra.index.BucketMetadata;
+import com.expedit.rinha2026.infra.index.LoadedIndex;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
+public final class BucketBoundsCalculator {
+    public LoadedIndex buildIndexed(List<ReferenceRecord> records) {
+        Map<Integer, List<ReferenceRecord>> grouped = new BucketAccumulator().groupByBucket(records);
+
+        int vectorCount = records.size();
+        float[] vectors = new float[vectorCount * Constants.VECTOR_STRIDE];
+        byte[] labels = new byte[vectorCount];
+        List<BucketMetadata> buckets = new ArrayList<>();
+
+        int row = 0;
+        for (Map.Entry<Integer, List<ReferenceRecord>> entry : grouped.entrySet()) {
+            int key = entry.getKey();
+            List<ReferenceRecord> bucketRecords = entry.getValue();
+            int start = row;
+
+            float[] minBounds = new float[Constants.VECTOR_DIMENSIONS];
+            float[] maxBounds = new float[Constants.VECTOR_DIMENSIONS];
+            Arrays.fill(minBounds, Float.POSITIVE_INFINITY);
+            Arrays.fill(maxBounds, Float.NEGATIVE_INFINITY);
+
+            for (ReferenceRecord record : bucketRecords) {
+                float[] vector14 = record.vector14();
+                int offset = row * Constants.VECTOR_STRIDE;
+                for (int d = 0; d < Constants.VECTOR_DIMENSIONS; d++) {
+                    float value = vector14[d];
+                    vectors[offset + d] = value;
+                    if (value < minBounds[d]) {
+                        minBounds[d] = value;
+                    }
+                    if (value > maxBounds[d]) {
+                        maxBounds[d] = value;
+                    }
+                }
+                vectors[offset + 14] = 0f;
+                vectors[offset + 15] = 0f;
+                labels[row] = record.label();
+                row++;
+            }
+
+            buckets.add(new BucketMetadata(key, start, bucketRecords.size(), minBounds, maxBounds));
+        }
+
+        return new LoadedIndex(
+            Constants.VECTOR_DIMENSIONS,
+            Constants.VECTOR_STRIDE,
+            vectors,
+            labels,
+            buckets.toArray(new BucketMetadata[0])
+        );
+    }
+}
+
+============================== tools/preprocessor/src/main/java/com/expedit/rinha2026/tools/preprocessor/BucketKeyEncoder.java ==============================
+package com.expedit.rinha2026.tools.preprocessor;
+
+public final class BucketKeyEncoder {
+    public int encode(float[] v) {
+        int day = quantize(v[4], 6);            // day_of_week normalized
+        int isOnline = v[9] >= 0.5f ? 1 : 0;
+        int cardPresent = v[10] >= 0.5f ? 1 : 0;
+        int unknownMerchant = v[11] >= 0.5f ? 1 : 0;
+        int hasLastTx = v[5] < 0f ? 0 : 1;
+        int mccRiskBin = quantize(v[12], 7);
+
+        return (day)
+            | (isOnline << 3)
+            | (cardPresent << 4)
+            | (unknownMerchant << 5)
+            | (hasLastTx << 6)
+            | (mccRiskBin << 7);
+    }
+
+    private int quantize(float value, int max) {
+        if (value <= 0f) {
+            return 0;
+        }
+        if (value >= 1f) {
+            return max;
+        }
+        int q = (int) (value * max);
+        if (q < 0) {
+            return 0;
+        }
+        if (q > max) {
+            return max;
+        }
+        return q;
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/infra/index/BinaryIndexLoader.java ==============================
+package com.expedit.rinha2026.infra.index;
+
+import com.expedit.rinha2026.domain.Constants;
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public final class BinaryIndexLoader {
+    public LoadedIndex load(Path path) throws IOException {
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
+            int magic = in.readInt();
+            int version = in.readInt();
+            int stride = in.readInt();
+            int dimensions = in.readInt();
+            int vectorCount = in.readInt();
+            int bucketCount = in.readInt();
+
+            if (magic != BinaryIndexFormat.MAGIC) {
+                throw new IOException("Invalid index magic: " + magic);
+            }
+            if (version != BinaryIndexFormat.VERSION) {
+                throw new IOException("Unsupported index version: " + version);
+            }
+            if (stride != Constants.VECTOR_STRIDE) {
+                throw new IOException("Unsupported index stride: " + stride);
+            }
+            if (dimensions != Constants.VECTOR_DIMENSIONS) {
+                throw new IOException("Unsupported dimensions: " + dimensions);
+            }
+            if (vectorCount < 0 || bucketCount < 0) {
+                throw new IOException("Invalid counts: vectors=" + vectorCount + " buckets=" + bucketCount);
+            }
+
+            BucketMetadata[] buckets = new BucketMetadata[bucketCount];
+            for (int b = 0; b < bucketCount; b++) {
+                int key = in.readInt();
+                int startVector = in.readInt();
+                int count = in.readInt();
+                float[] minBounds = new float[dimensions];
+                float[] maxBounds = new float[dimensions];
+                for (int i = 0; i < dimensions; i++) {
+                    minBounds[i] = in.readFloat();
+                }
+                for (int i = 0; i < dimensions; i++) {
+                    maxBounds[i] = in.readFloat();
+                }
+                buckets[b] = new BucketMetadata(key, startVector, count, minBounds, maxBounds);
+            }
+
+            float[] vectors = new float[vectorCount * stride];
+            for (int i = 0; i < vectors.length; i++) {
+                vectors[i] = in.readFloat();
+            }
+
+            byte[] labels = new byte[vectorCount];
+            in.readFully(labels);
+
+            return new LoadedIndex(dimensions, stride, vectors, labels, buckets);
+        }
+    }
+
+    public LoadedIndex loadOrEmpty(Path path) {
+        if (!Files.exists(path)) {
+            return LoadedIndex.empty();
+        }
+
+        try {
+            return load(path);
+        } catch (IOException e) {
+            return LoadedIndex.empty();
+        }
+    }
+}
+
+============================== app/src/main/java/com/expedit/rinha2026/infra/index/LoadedIndex.java ==============================
+package com.expedit.rinha2026.infra.index;
+
+import com.expedit.rinha2026.domain.Constants;
+
+public record LoadedIndex(
+    int dimensions,
+    int stride,
+    float[] vectors,
+    byte[] labels,
+    BucketMetadata[] buckets
+) {
+    public static LoadedIndex fromVectors(float[] vectors, byte[] labels) {
+        return new LoadedIndex(
+            Constants.VECTOR_DIMENSIONS,
+            Constants.VECTOR_STRIDE,
+            vectors,
+            labels,
+            new BucketMetadata[0]
+        );
+    }
+
+    public static LoadedIndex empty() {
+        return fromVectors(new float[0], new byte[0]);
+    }
+}
+
+============================== benchmark/docker-compose.local.yml ==============================
+services:
+  load-balancer:
+    image: haproxy:3.0-alpine
+    container_name: rinha-lb-local
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - api-1
+      - api-2
+    cpus: "0.05"
+    mem_limit: "32m"
+
+  api-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    container_name: rinha-api-1-local
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=2
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
+
+  api-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    container_name: rinha-api-2-local
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=2
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
+
+============================== benchmark/haproxy.cfg ==============================
+global
+  maxconn 20000
+
+defaults
+  mode http
+  timeout connect 1s
+  timeout client 5s
+  timeout server 5s
+
+frontend fe
+  bind *:9999
+  default_backend be
+
+backend be
+  balance roundrobin
+  server api1 api-1:8080 check
+  server api2 api-2:8080 check
+
+============================== submission/docker-compose.yml ==============================
+services:
+  load-balancer:
+    image: haproxy:3.0-alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - api-1
+      - api-2
+    cpus: "0.05"
+    mem_limit: "32m"
+
+  api-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=2
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
+
+  api-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=2
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
+
+============================== scripts/verify-rules.sh ==============================
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+export LANG=C
+
+COMPOSE_FILE="${COMPOSE_FILE:-submission/docker-compose.yml}"
+
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+  echo "[verify] erro: compose nao encontrado em $COMPOSE_FILE"
+  exit 1
+fi
+
+fail() {
+  echo "[verify] erro: $1"
+  exit 1
+}
+
+service_exists() {
+  local svc="$1"
+  grep -Eq "^  ${svc}:$" "$COMPOSE_FILE"
+}
+
+service_block_has() {
+  local svc="$1"
+  local pattern="$2"
+  awk -v svc="$svc" -v pattern="$pattern" '
+    BEGIN { in_service = 0 }
+    $0 ~ "^  " svc ":$" { in_service = 1; next }
+    in_service && $0 ~ "^  [^ ]" { in_service = 0 }
+    in_service && $0 ~ pattern { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$COMPOSE_FILE"
+}
+
+sum_cpus() {
+  awk '
+    /^  [A-Za-z0-9_-]+:$/ { service=$1; sub(":", "", service); next }
+    /^    cpus:/ {
+      value=$2
+      gsub(/"/, "", value)
+      sum += value + 0
+    }
+    END { printf "%.6f", sum }
+  ' "$COMPOSE_FILE"
+}
+
+sum_mem_mb() {
+  awk '
+    function to_mb(raw, unit, num) {
+      unit = tolower(raw)
+      gsub(/"/, "", unit)
+      num = unit
+      gsub(/[a-z]/, "", num)
+
+      if (unit ~ /gb$/ || unit ~ /g$/) return (num + 0) * 1024
+      if (unit ~ /mb$/ || unit ~ /m$/) return (num + 0)
+      if (unit ~ /kb$/ || unit ~ /k$/) return (num + 0) / 1024
+      return (num + 0) / (1024 * 1024)
+    }
+
+    /^    mem_limit:/ {
+      sum += to_mb($2)
+    }
+
+    END { printf "%.6f", sum }
+  ' "$COMPOSE_FILE"
+}
+
+service_exists "load-balancer" || fail "servico load-balancer ausente"
+service_exists "api-1" || fail "servico api-1 ausente"
+service_exists "api-2" || fail "servico api-2 ausente"
+
+grep -Eq '^\s*-\s*"?9999:9999"?$' "$COMPOSE_FILE" || fail "porta externa 9999:9999 nao encontrada"
+
+service_block_has "api-1" "^    ports:" && fail "api-1 nao deve expor portas no host"
+service_block_has "api-2" "^    ports:" && fail "api-2 nao deve expor portas no host"
+
+service_block_has "api-1" "^    expose:" || fail "api-1 deve expor porta interna"
+service_block_has "api-2" "^    expose:" || fail "api-2 deve expor porta interna"
+
+service_block_has "api-1" "8080" || fail "api-1 deve usar porta interna 8080"
+service_block_has "api-2" "8080" || fail "api-2 deve usar porta interna 8080"
+
+if grep -Eq '^\s*network_mode:\s*"?host"?$' "$COMPOSE_FILE"; then
+  fail "network_mode host nao permitido"
+fi
+
+if grep -Eq '^\s*privileged:\s*true$' "$COMPOSE_FILE"; then
+  fail "privileged=true nao permitido"
+fi
+
+cpu_total="$(LC_ALL=C sum_cpus)"
+mem_total_mb="$(LC_ALL=C sum_mem_mb)"
+
+awk -v total="$cpu_total" 'BEGIN { if (total > 1.000001) exit 1 }' || fail "CPU total excede 1.0 (atual: $cpu_total)"
+awk -v total="$mem_total_mb" 'BEGIN { if (total > 350.000001) exit 1 }' || fail "memoria total excede 350MB (atual: ${mem_total_mb}MB)"
+
+echo "[verify] ok: topologia e limites validados"
+echo "[verify] cpu_total=$cpu_total"
+echo "[verify] mem_total_mb=$mem_total_mb"
+
+============================== benchmark/run-k6.sh ==============================
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BENCH_DIR="$ROOT_DIR/benchmark"
+COMPOSE_FILE="$BENCH_DIR/docker-compose.local.yml"
+
+# Caminho do repo oficial da Rinha 2026 já clonado localmente.
+# Exemplo:
+# export RINHA_2026_REPO="$HOME/dev/rinha-de-backend-2026"
+RINHA_2026_REPO="${RINHA_2026_REPO:-}"
+
+if [[ -z "$RINHA_2026_REPO" ]]; then
+  echo "[k6] erro: defina RINHA_2026_REPO apontando para o repo oficial da rinha 2026"
+  exit 1
+fi
+
+if [[ ! -d "$RINHA_2026_REPO" ]]; then
+  echo "[k6] erro: diretorio nao encontrado: $RINHA_2026_REPO"
+  exit 1
+fi
+
+if [[ ! -f "$RINHA_2026_REPO/test/test.js" ]]; then
+  echo "[k6] erro: script oficial nao encontrado em $RINHA_2026_REPO/test/test.js"
+  exit 1
+fi
+
+if [[ ! -f "$RINHA_2026_REPO/test/test-data.json" ]]; then
+  echo "[k6] erro: massa oficial nao encontrada em $RINHA_2026_REPO/test/test-data.json"
+  exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[k6] erro: docker nao encontrado no PATH"
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "[k6] erro: jq nao encontrado no PATH"
+  exit 1
+fi
+
+cleanup() {
+  echo "[k6] derrubando ambiente local..."
+  docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+echo "[k6] validando regras do compose local..."
+COMPOSE_FILE="$COMPOSE_FILE" "$ROOT_DIR/scripts/verify-rules.sh"
+
+echo "[k6] gerando indice binario..."
+"$ROOT_DIR/scripts/preprocess-index.sh"
+
+echo "[k6] buildando jar JVM..."
+"$ROOT_DIR/scripts/build-jvm.sh"
+
+echo "[k6] subindo ambiente local..."
+docker compose -f "$COMPOSE_FILE" up --build -d
+
+echo "[k6] aguardando /ready..."
+READY_URL="http://localhost:9999/ready"
+MAX_ATTEMPTS=60
+SLEEP_SECS=2
+
+for ((i=1; i<=MAX_ATTEMPTS; i++)); do
+  code="$(curl -s -o /tmp/rinha-ready.out -w "%{http_code}" "$READY_URL" || true)"
+  if [[ "$code" =~ ^2 ]]; then
+    echo "[k6] ambiente pronto"
+    break
+  fi
+
+  if [[ "$i" -eq "$MAX_ATTEMPTS" ]]; then
+    echo "[k6] erro: ambiente nao ficou pronto a tempo"
+    echo "[k6] resposta final do /ready:"
+    cat /tmp/rinha-ready.out || true
+    echo
+    echo "[k6] logs do compose:"
+    docker compose -f "$COMPOSE_FILE" logs --no-color || true
+    exit 1
+  fi
+
+  sleep "$SLEEP_SECS"
+done
+
+echo "[k6] rodando teste oficial..."
+pushd "$RINHA_2026_REPO" >/dev/null
+rm -f test/results.json
+
+# O script oficial já aponta para http://localhost:9999/fraud-score
+k6 run test/test.js
+
+if [[ ! -f test/results.json ]]; then
+  echo "[k6] erro: test/results.json nao foi gerado"
+  echo "[k6] logs do compose:"
+  docker compose -f "$COMPOSE_FILE" logs --no-color || true
+  exit 1
+fi
+
+echo "[k6] resultado:"
+cat test/results.json | jq
+
+mkdir -p "$BENCH_DIR/results"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+cp test/results.json "$BENCH_DIR/results/results-$STAMP.json"
+
+popd >/dev/null
+
+echo "[k6] resultado salvo em benchmark/results/results-$STAMP.json"

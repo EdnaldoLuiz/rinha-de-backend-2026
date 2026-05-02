@@ -1,0 +1,26 @@
+{
+  "transaction": {
+    "id": "TX-001",
+    "amount": 120.50,
+    "installments": 1,
+    "requested_at": "2026-01-10T12:30:00Z"
+  },
+  "customer": {
+    "id": "CUST-001",
+    "avg_amount": 80.00,
+    "tx_count_24h": 3,
+    "known_merchants": ["MERC-016", "MERC-002"]
+  },
+  "merchant": {
+    "id": "MERC-016",
+    "mcc": "5411",
+    "avg_amount": 95.00
+  },
+  "terminal": {
+    "id": "TERM-001",
+    "is_online": true,
+    "card_present": false,
+    "km_from_home": 2.5
+  },
+  "last_transaction": null
+}

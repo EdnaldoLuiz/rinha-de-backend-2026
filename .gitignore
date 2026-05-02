@@ -1,0 +1,21 @@
+.idea/
+.vscode/
+*.iml
+target/
+**/target/
+out/
+*.log
+.DS_Store
+.codex
+
+# local env files
+.env
+.env.local
+.env.*
+!.env.example
+
+# generated benchmark outputs
+benchmark/results/
+
+# generated binary index
+app/src/main/resources/fraud-index.dat

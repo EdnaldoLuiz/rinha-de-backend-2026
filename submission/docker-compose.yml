@@ -1,0 +1,38 @@
+services:
+  load-balancer:
+    image: haproxy:3.0-alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - api-1
+      - api-2
+    cpus: "0.05"
+    mem_limit: "32m"
+
+  api-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=1
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
+
+  api-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile.jvm
+    environment:
+      - PORT=8080
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=1
+    expose:
+      - "8080"
+    cpus: "0.475"
+    mem_limit: "158m"
