@@ -1,0 +1,13 @@
+Baseline p99 ~= 12.06ms
+
+Known result:
+complete=14273
+p99=54.47ms in one later run / 12.06ms in best fast run
+FP/FN=3/1 or observed varying depending runtime config
+final_score=4647.87 in best run
+
+Important:
+- preserve exact index hash
+- preserve compose
+- preserve HAProxy config
+- debug flags must be OFF for real benchmark
