@@ -4,7 +4,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BENCH_DIR="$ROOT_DIR/benchmark"
-COMPOSE_FILE="$BENCH_DIR/docker-compose.local.yml"
+COMPOSE_FILE="${COMPOSE_FILE:-$BENCH_DIR/docker-compose.local.yml}"
+API1_CONTAINER="${API1_CONTAINER:-rinha-api-1-local}"
+API2_CONTAINER="${API2_CONTAINER:-rinha-api-2-local}"
+LB_CONTAINER="${LB_CONTAINER:-rinha-lb-local}"
 
 export INDEX_MODE="${INDEX_MODE:-ivf}"
 export IVF_CLUSTERS="${IVF_CLUSTERS:-4096}"
@@ -80,7 +83,7 @@ if [[ "$PREBUILD_LOCAL_INDEX" == "1" ]]; then
   echo "[k6] gerando indice local com a mesma config do Docker..."
   "$ROOT_DIR/scripts/preprocess-index.sh"
 else
-  echo "[k6] pulando indice local; Dockerfile.jvm e a fonte da verdade do indice do container"
+  echo "[k6] pulando indice local; Dockerfile do compose e a fonte da verdade do indice do container"
 fi
 
 if [[ "$BUILD_LOCAL_JAR" == "1" ]]; then
@@ -122,7 +125,7 @@ for ((i=1; i<=MAX_ATTEMPTS; i++)); do
 done
 
 echo "[k6] conferindo config dos containers..."
-for container in rinha-api-1-local rinha-api-2-local; do
+for container in "$API1_CONTAINER" "$API2_CONTAINER"; do
   actual_clusters="$(docker exec "$container" printenv IVF_CLUSTERS 2>/dev/null || true)"
   actual_fast="$(docker exec "$container" printenv IVF_FAST_NPROBE 2>/dev/null || true)"
   actual_full="$(docker exec "$container" printenv IVF_FULL_NPROBE 2>/dev/null || true)"

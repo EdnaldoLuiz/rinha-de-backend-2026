@@ -1,0 +1,48 @@
+FROM maven:3.9.9-eclipse-temurin-21 AS build
+WORKDIR /workspace
+
+ARG INDEX_MODE=ivf
+ARG IVF_CLUSTERS=4096
+ARG IVF_FAST_NPROBE=8
+ARG IVF_FULL_NPROBE=32
+ARG IVF_SAMPLE_SIZE=50000
+ARG IVF_ITERATIONS=12
+
+COPY pom.xml ./
+COPY app ./app
+COPY tools ./tools
+COPY resources ./resources
+
+RUN mvn -q -pl tools/preprocessor -am clean package -DskipTests
+RUN INDEX_MODE=${INDEX_MODE} IVF_CLUSTERS=${IVF_CLUSTERS} IVF_FAST_NPROBE=${IVF_FAST_NPROBE} IVF_FULL_NPROBE=${IVF_FULL_NPROBE} IVF_SAMPLE_SIZE=${IVF_SAMPLE_SIZE} IVF_ITERATIONS=${IVF_ITERATIONS} java -jar tools/preprocessor/target/preprocessor-0.1.0-SNAPSHOT-all.jar resources/references.json.gz app/src/main/resources/fraud-index.dat
+RUN mvn -q -pl app -am package -DskipTests
+
+FROM ghcr.io/graalvm/native-image-community:21 AS native
+WORKDIR /workspace
+
+COPY --from=build /workspace/app/target/app-0.1.0-SNAPSHOT.jar /workspace/app.jar
+
+RUN native-image \
+    --no-fallback \
+    -O3 \
+    -H:+ReportExceptionStackTraces \
+    -jar /workspace/app.jar \
+    -o /out/rinha-native
+
+FROM debian:bookworm-slim
+WORKDIR /app
+
+COPY --from=native /out/rinha-native /app/rinha-native
+COPY --from=build /workspace/app/src/main/resources/fraud-index.dat /app/resources/fraud-index.dat
+
+ENV PORT=8080
+ENV INDEX_MODE=ivf
+ENV IVF_CLUSTERS=4096
+ENV IVF_FAST_NPROBE=8
+ENV IVF_FULL_NPROBE=32
+ENV INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+ENV SERVER_THREADS=1
+ENV SEARCH_WARMUP_ITERATIONS=20000
+
+EXPOSE 8080
+ENTRYPOINT ["/app/rinha-native"]

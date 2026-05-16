@@ -1,0 +1,81 @@
+services:
+  load-balancer:
+    image: haproxy:3.0-alpine
+    container_name: rinha-lb-native-local
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - api-1
+      - api-2
+    cpus: "0.100"
+    mem_limit: "20m"
+
+  api-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile.native
+      args:
+        INDEX_MODE: ${INDEX_MODE:-ivf}
+        IVF_CLUSTERS: ${IVF_CLUSTERS:-4096}
+        IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-8}
+        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-32}
+        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-50000}
+        IVF_ITERATIONS: ${IVF_ITERATIONS:-12}
+    container_name: rinha-api-1-native-local
+    environment:
+      - PORT=8080
+      - INDEX_MODE=${INDEX_MODE:-ivf}
+      - IVF_CLUSTERS=${IVF_CLUSTERS:-4096}
+      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-8}
+      - IVF_FULL_NPROBE=${IVF_FULL_NPROBE:-32}
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=${SERVER_THREADS:-1}
+      - SEARCH_WARMUP_ITERATIONS=${SEARCH_WARMUP_ITERATIONS:-20000}
+      - IVF_STATS=${IVF_STATS:-0}
+      - IVF_BBOX_REPAIR=${IVF_BBOX_REPAIR:-0}
+      - FALLBACK_STATS=${FALLBACK_STATS:-0}
+      - RUNTIME_MISMATCH_DEBUG=${RUNTIME_MISMATCH_DEBUG:-0}
+      - RUNTIME_MISMATCH_FILE=${RUNTIME_MISMATCH_FILE:-}
+      - RUNTIME_DEBUG_TX_IDS=${RUNTIME_DEBUG_TX_IDS:-}
+    volumes:
+      - ${RINHA_2026_REPO}/test/test-data.json:/app/test-data.json:ro
+    expose:
+      - "8080"
+    cpus: "0.450"
+    mem_limit: "165m"
+
+  api-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile.native
+      args:
+        INDEX_MODE: ${INDEX_MODE:-ivf}
+        IVF_CLUSTERS: ${IVF_CLUSTERS:-4096}
+        IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-8}
+        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-32}
+        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-50000}
+        IVF_ITERATIONS: ${IVF_ITERATIONS:-12}
+    container_name: rinha-api-2-native-local
+    environment:
+      - PORT=8080
+      - INDEX_MODE=${INDEX_MODE:-ivf}
+      - IVF_CLUSTERS=${IVF_CLUSTERS:-4096}
+      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-8}
+      - IVF_FULL_NPROBE=${IVF_FULL_NPROBE:-32}
+      - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+      - SERVER_THREADS=${SERVER_THREADS:-1}
+      - SEARCH_WARMUP_ITERATIONS=${SEARCH_WARMUP_ITERATIONS:-20000}
+      - IVF_STATS=${IVF_STATS:-0}
+      - IVF_BBOX_REPAIR=${IVF_BBOX_REPAIR:-0}
+      - FALLBACK_STATS=${FALLBACK_STATS:-0}
+      - RUNTIME_MISMATCH_DEBUG=${RUNTIME_MISMATCH_DEBUG:-0}
+      - RUNTIME_MISMATCH_FILE=${RUNTIME_MISMATCH_FILE:-}
+      - RUNTIME_DEBUG_TX_IDS=${RUNTIME_DEBUG_TX_IDS:-}
+    volumes:
+      - ${RINHA_2026_REPO}/test/test-data.json:/app/test-data.json:ro
+    expose:
+      - "8080"
+    cpus: "0.450"
+    mem_limit: "165m"
