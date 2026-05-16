@@ -28,6 +28,7 @@ REBUILD="${REBUILD:-1}"
 PREBUILD_LOCAL_INDEX="${PREBUILD_LOCAL_INDEX:-0}"
 BUILD_LOCAL_JAR="${BUILD_LOCAL_JAR:-0}"
 SAVE_CONTEXT="${SAVE_CONTEXT:-1}"
+PRINT_PROCESS_CMDLINE="${PRINT_PROCESS_CMDLINE:-0}"
 
 # Caminho do repo oficial da Rinha 2026 já clonado localmente.
 # Exemplo:
@@ -139,6 +140,17 @@ echo "[k6] indices carregados:"
 docker compose -f "$COMPOSE_FILE" logs --no-color api-1 api-2 \
   | grep "Loaded index" \
   | tail -n 4 || true
+
+if [[ "$PRINT_PROCESS_CMDLINE" == "1" ]]; then
+  echo "[k6] processo PID1 dos containers:"
+  for container in "$API1_CONTAINER" "$API2_CONTAINER"; do
+    cmdline="$(docker exec "$container" sh -c 'xargs -0 echo </proc/1/cmdline' 2>/dev/null || true)"
+    if [[ -z "$cmdline" ]]; then
+      cmdline="$(docker inspect "$container" --format 'Path={{.Path}} Args={{json .Args}}' 2>/dev/null || true)"
+    fi
+    echo "$container | $cmdline"
+  done
+fi
 
 echo "[k6] rodando teste oficial..."
 pushd "$RINHA_2026_REPO" >/dev/null
