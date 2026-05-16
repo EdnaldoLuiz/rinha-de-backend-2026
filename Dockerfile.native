@@ -22,6 +22,7 @@ WORKDIR /workspace
 
 COPY --from=build /workspace/app/target/app-0.1.0-SNAPSHOT.jar /workspace/app.jar
 
+RUN mkdir -p /out
 RUN native-image \
     --no-fallback \
     -O3 \
@@ -34,6 +35,8 @@ WORKDIR /app
 
 COPY --from=native /out/rinha-native /app/rinha-native
 COPY --from=build /workspace/app/src/main/resources/fraud-index.dat /app/resources/fraud-index.dat
+COPY --from=build /workspace/app/src/main/resources/normalization.json /app/resources/normalization.json
+COPY --from=build /workspace/app/src/main/resources/mcc_risk.json /app/resources/mcc_risk.json
 
 ENV PORT=8080
 ENV INDEX_MODE=ivf
@@ -41,6 +44,8 @@ ENV IVF_CLUSTERS=4096
 ENV IVF_FAST_NPROBE=8
 ENV IVF_FULL_NPROBE=32
 ENV INDEX_BINARY_FILE=/app/resources/fraud-index.dat
+ENV NORMALIZATION_FILE=/app/resources/normalization.json
+ENV MCC_RISK_FILE=/app/resources/mcc_risk.json
 ENV SERVER_THREADS=1
 ENV SEARCH_WARMUP_ITERATIONS=20000
 
