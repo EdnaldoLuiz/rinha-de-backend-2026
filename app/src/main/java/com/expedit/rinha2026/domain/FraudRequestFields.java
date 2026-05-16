@@ -15,7 +15,7 @@ public final class FraudRequestFields {
     public int customerTxCount24h;
 
     public int knownMerchantCount;
-    public final int[] knownMerchantIds = new int[16];
+    public final int[] knownMerchantIds = new int[64];
 
     public int merchantId;
     public int merchantMcc;

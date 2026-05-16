@@ -29,6 +29,7 @@ import java.security.NoSuchAlgorithmException;
 
 public final class StartupLoader {
     private static final String BINARY_SEARCH_MODE = System.getenv().getOrDefault("BINARY_SEARCH_MODE", "aggressive");
+    private static final String INDEX_MODE = System.getenv().getOrDefault("INDEX_MODE", "ivf").trim();
     private static final int SEARCH_WARMUP_ITERATIONS = intSetting("SEARCH_WARMUP_ITERATIONS", 1_000);
 
     public void start(AppConfig appConfig, ReadinessState readinessState) throws Exception {
@@ -80,9 +81,13 @@ public final class StartupLoader {
             try {
                 IvfIndex index = new IvfIndexLoader().load(path);
                 validateIvfRuntimeConfig(index);
-                SearchEngine searchEngine = new IvfKnnSearchEngine(index);
+                boolean exactMode = "exact".equalsIgnoreCase(INDEX_MODE);
+                SearchEngine searchEngine = exactMode
+                    ? ExactKnnSearchEngine.forIvf(index.vectors(), index.labels(), index.origIds())
+                    : new IvfKnnSearchEngine(index);
+                String loadedType = exactMode ? "exact-ivf" : "ivf";
                 return new LoadedSearch(
-                    "ivf",
+                    loadedType,
                     path.toString(),
                     hash,
                     searchEngine,
@@ -127,8 +132,10 @@ public final class StartupLoader {
     }
 
     private static void validateIvfRuntimeConfig(IvfIndex index) {
-        String indexMode = System.getenv().getOrDefault("INDEX_MODE", "").trim();
-        if (!indexMode.isBlank() && !"ivf".equalsIgnoreCase(indexMode)) {
+        String indexMode = INDEX_MODE;
+        if (!indexMode.isBlank()
+            && !"ivf".equalsIgnoreCase(indexMode)
+            && !"exact".equalsIgnoreCase(indexMode)) {
             throw new IllegalStateException("INDEX_MODE=" + indexMode + " but IVF index was loaded");
         }
 

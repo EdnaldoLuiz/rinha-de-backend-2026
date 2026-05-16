@@ -267,7 +267,7 @@ public final class IvfKnnSearchEngine implements SearchEngine {
             offset,
             top5.currentWorst()
         );
-        if (dist < top5.currentWorst()) {
+        if (dist <= top5.currentWorst()) {
             top5.offer(dist, index.labels()[row], index.origIds()[row]);
         }
     }

@@ -9,23 +9,33 @@ public final class ExactKnnSearchEngine implements SearchEngine {
     private final short[] vectors;
     private final byte[] labels;
     private final int[] bucketStarts;
+    private final int[] origIds;
     private final ThreadLocal<Top5Selector> top5Local;
     private final ThreadLocal<boolean[]> visitedBuckets;
 
     public ExactKnnSearchEngine(short[] vectors, byte[] labels) {
-        this(vectors, labels, null);
+        this(vectors, labels, null, null);
     }
 
     public ExactKnnSearchEngine(short[] vectors, byte[] labels, int[] bucketStarts) {
+        this(vectors, labels, bucketStarts, null);
+    }
+
+    private ExactKnnSearchEngine(short[] vectors, byte[] labels, int[] bucketStarts, int[] origIds) {
         this.vectors = vectors;
         this.labels = labels;
         this.bucketStarts = bucketStarts == null ? new int[0] : bucketStarts;
+        this.origIds = origIds == null ? new int[0] : origIds;
         this.top5Local = ThreadLocal.withInitial(Top5Selector::new);
         this.visitedBuckets = ThreadLocal.withInitial(() -> new boolean[Constants.BUCKET_COUNT]);
     }
 
+    public static ExactKnnSearchEngine forIvf(short[] vectors, byte[] labels, int[] origIds) {
+        return new ExactKnnSearchEngine(vectors, labels, null, origIds);
+    }
+
     public static ExactKnnSearchEngine empty() {
-        return new ExactKnnSearchEngine(new short[0], new byte[0], new int[0]);
+        return new ExactKnnSearchEngine(new short[0], new byte[0], new int[0], new int[0]);
     }
 
     @Override
@@ -126,8 +136,9 @@ public final class ExactKnnSearchEngine implements SearchEngine {
             offset,
             top5.currentWorst()
         );
-        if (dist < top5.currentWorst()) {
-            top5.offer(dist, labels[row], row);
+        if (dist <= top5.currentWorst()) {
+            int origId = origIds.length == labels.length ? origIds[row] : row;
+            top5.offer(dist, labels[row], origId);
         }
     }
 

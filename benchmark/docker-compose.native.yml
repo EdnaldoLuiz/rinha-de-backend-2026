@@ -19,7 +19,7 @@ services:
       args:
         INDEX_MODE: ${INDEX_MODE:-ivf}
         IVF_CLUSTERS: ${IVF_CLUSTERS:-4096}
-        IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-8}
+        IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-32}
         IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-32}
         IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-50000}
         IVF_ITERATIONS: ${IVF_ITERATIONS:-12}
@@ -28,7 +28,7 @@ services:
       - PORT=8080
       - INDEX_MODE=${INDEX_MODE:-ivf}
       - IVF_CLUSTERS=${IVF_CLUSTERS:-4096}
-      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-8}
+      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-32}
       - IVF_FULL_NPROBE=${IVF_FULL_NPROBE:-32}
       - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
       - NORMALIZATION_FILE=/app/resources/normalization.json
