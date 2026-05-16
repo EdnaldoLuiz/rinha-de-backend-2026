@@ -16,6 +16,13 @@ out/
 
 # generated benchmark outputs
 benchmark/results/
+benchmark/profiles/
+benchmark/debug/
+benchmark/docker-compose.sweep*.yml
+benchmark/docker-compose.tcp-*.yml
+benchmark/docker-compose.tmp-*.yml
+benchmark/haproxy.tcp-*.cfg
+benchmark/haproxy.tmp-*.cfg
 
 # generated binary index
 app/src/main/resources/fraud-index.dat
@@ -23,3 +30,4 @@ app/src/main/resources/fraud-index.dat
 # local concat tooling/output
 concat_relevant_files.py
 project_concat.txt
+lote*.txt

@@ -18,14 +18,18 @@ services:
       dockerfile: Dockerfile.jvm
       args:
         INDEX_MODE: ${INDEX_MODE:-ivf}
-        IVF_CLUSTERS: ${IVF_CLUSTERS:-512}
+        IVF_CLUSTERS: ${IVF_CLUSTERS:-4096}
         IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-8}
-        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-16}
-        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-20000}
-        IVF_ITERATIONS: ${IVF_ITERATIONS:-6}
+        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-32}
+        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-50000}
+        IVF_ITERATIONS: ${IVF_ITERATIONS:-12}
     container_name: rinha-api-1-local
     environment:
       - PORT=8080
+      - INDEX_MODE=${INDEX_MODE:-ivf}
+      - IVF_CLUSTERS=${IVF_CLUSTERS:-4096}
+      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-8}
+      - IVF_FULL_NPROBE=${IVF_FULL_NPROBE:-32}
       - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
       - SERVER_THREADS=${SERVER_THREADS:-4}
       - IVF_STATS=${IVF_STATS:-0}
@@ -46,14 +50,18 @@ services:
       dockerfile: Dockerfile.jvm
       args:
         INDEX_MODE: ${INDEX_MODE:-ivf}
-        IVF_CLUSTERS: ${IVF_CLUSTERS:-512}
+        IVF_CLUSTERS: ${IVF_CLUSTERS:-4096}
         IVF_FAST_NPROBE: ${IVF_FAST_NPROBE:-8}
-        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-16}
-        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-20000}
-        IVF_ITERATIONS: ${IVF_ITERATIONS:-6}
+        IVF_FULL_NPROBE: ${IVF_FULL_NPROBE:-32}
+        IVF_SAMPLE_SIZE: ${IVF_SAMPLE_SIZE:-50000}
+        IVF_ITERATIONS: ${IVF_ITERATIONS:-12}
     container_name: rinha-api-2-local
     environment:
       - PORT=8080
+      - INDEX_MODE=${INDEX_MODE:-ivf}
+      - IVF_CLUSTERS=${IVF_CLUSTERS:-4096}
+      - IVF_FAST_NPROBE=${IVF_FAST_NPROBE:-8}
+      - IVF_FULL_NPROBE=${IVF_FULL_NPROBE:-32}
       - INDEX_BINARY_FILE=/app/resources/fraud-index.dat
       - SERVER_THREADS=${SERVER_THREADS:-4}
       - IVF_STATS=${IVF_STATS:-0}

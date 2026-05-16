@@ -127,7 +127,7 @@ public final class ExactKnnSearchEngine implements SearchEngine {
             top5.currentWorst()
         );
         if (dist < top5.currentWorst()) {
-            top5.offer(dist, labels[row]);
+            top5.offer(dist, labels[row], row);
         }
     }
 

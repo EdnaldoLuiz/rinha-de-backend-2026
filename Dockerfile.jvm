@@ -1,5 +1,11 @@
 FROM maven:3.9.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
+ARG INDEX_MODE=ivf
+ARG IVF_CLUSTERS=4096
+ARG IVF_FAST_NPROBE=8
+ARG IVF_FULL_NPROBE=32
+ARG IVF_SAMPLE_SIZE=50000
+ARG IVF_ITERATIONS=12
 
 COPY pom.xml ./
 COPY app ./app
@@ -7,7 +13,7 @@ COPY tools ./tools
 COPY resources ./resources
 
 RUN mvn -q -pl tools/preprocessor -am clean package -DskipTests
-RUN java -jar tools/preprocessor/target/preprocessor-0.1.0-SNAPSHOT-all.jar resources/references.json.gz app/src/main/resources/fraud-index.dat
+RUN INDEX_MODE=${INDEX_MODE} IVF_CLUSTERS=${IVF_CLUSTERS} IVF_FAST_NPROBE=${IVF_FAST_NPROBE} IVF_FULL_NPROBE=${IVF_FULL_NPROBE} IVF_SAMPLE_SIZE=${IVF_SAMPLE_SIZE} IVF_ITERATIONS=${IVF_ITERATIONS} java -jar tools/preprocessor/target/preprocessor-0.1.0-SNAPSHOT-all.jar resources/references.json.gz app/src/main/resources/fraud-index.dat
 RUN mvn -q -pl app -am package -DskipTests
 
 FROM eclipse-temurin:21-jdk
